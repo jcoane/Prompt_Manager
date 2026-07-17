@@ -1,0 +1,15 @@
+bin/
+obj/
+.vs/
+*.user
+*.suo
+*.db
+*.db-shm
+*.db-wal
+artifacts/installer/*.exe
+artifacts/installer/*.zip
+artifacts/installer/setup-publish/
+artifacts/publish/
+artifacts/smoke/AppData/
+artifacts/smoke/**/bin/
+artifacts/smoke/**/obj/
