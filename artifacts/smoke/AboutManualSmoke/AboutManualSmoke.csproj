@@ -1,0 +1,16 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net8.0-windows</TargetFramework>
+    <UseWPF>true</UseWPF>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\..\..\src\PromptManager\PromptManager.csproj" />
+  </ItemGroup>
+  <ItemGroup>
+    <Content Include="..\..\..\USER_MANUAL.md" Link="USER_MANUAL.md" CopyToOutputDirectory="PreserveNewest" />
+    <Content Include="..\..\..\src\PromptManager\Assets\ProtoCall_logo.png" Link="Assets\ProtoCall_logo.png" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup></Project>
+
