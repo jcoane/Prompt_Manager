@@ -10,6 +10,10 @@ internal static class Program
     private const string AppName = "Prompt Manager";
     private const string ExeName = "PromptManager.exe";
     private const string PayloadResource = "PromptManagerSetup.Payload.zip";
+    private const string InstallManifestName = "install-manifest.txt";
+    private const string UninstallScriptName = "UninstallPromptManager.ps1";
+    private const string UninstallCommandName = "Uninstall Prompt Manager.cmd";
+    private const string InstallerVersion = "1.3.0";
 
     [STAThread]
     private static void Main(string[] args)
@@ -300,7 +304,8 @@ internal static class Program
             Directory.CreateDirectory(options.InstallDirectory);
 
             progress?.Invoke(8, "Extracting application files...");
-            ExtractPayload(options.InstallDirectory, progress);
+            RemovePreviousInstalledFiles(options.InstallDirectory);
+            var installedFiles = ExtractPayload(options.InstallDirectory, progress);
 
             var appExe = Path.Combine(options.InstallDirectory, ExeName);
             if (!File.Exists(appExe))
@@ -328,12 +333,15 @@ internal static class Program
                     "Launch Prompt Manager");
             }
 
+            IReadOnlyList<string> uninstallFiles = Array.Empty<string>();
             if (options.RegisterUninstallEntry)
             {
                 progress?.Invoke(90, "Writing uninstall information...");
-                WriteUninstallFiles(options.InstallDirectory);
+                uninstallFiles = WriteUninstallFiles(options.InstallDirectory);
                 RegisterUninstallEntry(options.InstallDirectory, appExe);
             }
+
+            WriteInstallManifest(options.InstallDirectory, installedFiles.Concat(uninstallFiles).Append(InstallManifestName));
 
             progress?.Invoke(96, "Finalizing installation...");
             if (options.LaunchAfterInstall)
@@ -371,26 +379,28 @@ internal static class Program
             }
         }
 
-        private static void ExtractPayload(string installDirectory, Action<int, string>? progress)
+        private static IReadOnlyList<string> ExtractPayload(string installDirectory, Action<int, string>? progress)
         {
             var assembly = Assembly.GetExecutingAssembly();
             using var stream = assembly.GetManifestResourceStream(PayloadResource)
                 ?? throw new InvalidOperationException("The installer payload is missing.");
             using var archive = new ZipArchive(stream, ZipArchiveMode.Read);
 
+            var installRoot = GetInstallRoot(installDirectory);
+            var installedFiles = new List<string>();
             var entries = archive.Entries.Where(entry => !string.IsNullOrEmpty(entry.Name)).ToList();
             for (var i = 0; i < entries.Count; i++)
             {
                 var entry = entries[i];
-                var destination = Path.GetFullPath(Path.Combine(installDirectory, entry.FullName));
-                var installRoot = Path.GetFullPath(installDirectory);
-                if (!destination.StartsWith(installRoot, StringComparison.OrdinalIgnoreCase))
+                var destination = Path.GetFullPath(Path.Combine(installRoot, entry.FullName));
+                if (!IsUnderInstallRoot(destination, installRoot))
                 {
                     throw new InvalidOperationException("The installer payload contains an invalid file path.");
                 }
 
                 Directory.CreateDirectory(Path.GetDirectoryName(destination)!);
                 entry.ExtractToFile(destination, true);
+                installedFiles.Add(ToManifestPath(entry.FullName));
 
                 if (i % 12 == 0)
                 {
@@ -398,8 +408,117 @@ internal static class Program
                     progress?.Invoke(percent, "Extracting " + entry.Name);
                 }
             }
+
+            return installedFiles;
         }
 
+        private static void RemovePreviousInstalledFiles(string installDirectory)
+        {
+            var manifestPath = Path.Combine(installDirectory, InstallManifestName);
+            if (!File.Exists(manifestPath))
+            {
+                return;
+            }
+
+            var entries = ReadManifestEntries(manifestPath).ToList();
+            foreach (var entry in entries.OrderByDescending(item => item.Length))
+            {
+                var filePath = GetManifestFilePath(installDirectory, entry);
+                if (filePath is null || !File.Exists(filePath))
+                {
+                    continue;
+                }
+
+                File.Delete(filePath);
+            }
+
+            RemoveEmptyParentDirectories(installDirectory, entries);
+        }
+
+        private static void WriteInstallManifest(string installDirectory, IEnumerable<string> relativeFiles)
+        {
+            var manifestPath = Path.Combine(installDirectory, InstallManifestName);
+            var entries = relativeFiles
+                .Select(ToManifestPath)
+                .Where(entry => !string.IsNullOrWhiteSpace(entry))
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .OrderBy(entry => entry, StringComparer.OrdinalIgnoreCase)
+                .ToList();
+
+            var lines = new List<string>
+            {
+                "# Prompt Manager install manifest",
+                "# Generated " + DateTime.Now.ToString("O")
+            };
+            lines.AddRange(entries);
+            File.WriteAllLines(manifestPath, lines);
+        }
+
+        private static IEnumerable<string> ReadManifestEntries(string manifestPath)
+        {
+            return File.ReadLines(manifestPath)
+                .Select(line => line.Trim())
+                .Where(line => line.Length > 0 && !line.StartsWith("#", StringComparison.Ordinal));
+        }
+
+        private static string? GetManifestFilePath(string installDirectory, string relativePath)
+        {
+            if (Path.IsPathRooted(relativePath))
+            {
+                return null;
+            }
+
+            var normalizedRelativePath = relativePath.Replace('/', Path.DirectorySeparatorChar);
+            var candidate = Path.GetFullPath(Path.Combine(GetInstallRoot(installDirectory), normalizedRelativePath));
+            return IsUnderInstallRoot(candidate, installDirectory) ? candidate : null;
+        }
+
+        private static void RemoveEmptyParentDirectories(string installDirectory, IEnumerable<string> relativeFiles)
+        {
+            var installRoot = GetInstallRoot(installDirectory);
+            var directories = relativeFiles
+                .Select(entry => GetManifestFilePath(installRoot, entry))
+                .Where(path => path is not null)
+                .Select(path => Path.GetDirectoryName(path!))
+                .Where(path => !string.IsNullOrWhiteSpace(path))
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .OrderByDescending(path => path!.Length);
+
+            foreach (var directory in directories)
+            {
+                var current = directory;
+                while (!string.IsNullOrWhiteSpace(current)
+                    && IsUnderInstallRoot(current, installRoot)
+                    && !string.Equals(GetInstallRoot(current), installRoot, StringComparison.OrdinalIgnoreCase))
+                {
+                    if (!Directory.Exists(current) || Directory.EnumerateFileSystemEntries(current).Any())
+                    {
+                        break;
+                    }
+
+                    Directory.Delete(current);
+                    current = Path.GetDirectoryName(current);
+                }
+            }
+        }
+
+        private static string GetInstallRoot(string installDirectory)
+        {
+            return Path.GetFullPath(installDirectory).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+        }
+
+        private static bool IsUnderInstallRoot(string path, string installDirectory)
+        {
+            var installRoot = GetInstallRoot(installDirectory);
+            var rootPrefix = installRoot + Path.DirectorySeparatorChar;
+            var fullPath = Path.GetFullPath(path);
+            return fullPath.StartsWith(rootPrefix, StringComparison.OrdinalIgnoreCase);
+        }
+
+        private static string ToManifestPath(string relativePath)
+        {
+            return relativePath.Replace(Path.DirectorySeparatorChar, '/').Replace(Path.AltDirectorySeparatorChar, '/').TrimStart('/');
+        }
         private static void CreateShortcut(string shortcutPath, string targetPath, string workingDirectory, string description)
         {
             Directory.CreateDirectory(Path.GetDirectoryName(shortcutPath)!);
@@ -414,27 +533,70 @@ internal static class Program
             shortcut.Save();
         }
 
-        private static void WriteUninstallFiles(string installDirectory)
+        private static IReadOnlyList<string> WriteUninstallFiles(string installDirectory)
         {
-            var uninstallScript = Path.Combine(installDirectory, "UninstallPromptManager.ps1");
-            var uninstallCommand = Path.Combine(installDirectory, "Uninstall Prompt Manager.cmd");
-            var escapedInstallDirectory = installDirectory.Replace("'", "''");
-            var removeInstallCommand = "Start-Sleep -Seconds 2; Remove-Item -LiteralPath '" + escapedInstallDirectory + "' -Recurse -Force";
+            var uninstallScript = Path.Combine(installDirectory, UninstallScriptName);
+            var uninstallCommand = Path.Combine(installDirectory, UninstallCommandName);
 
-            var script = string.Join(Environment.NewLine, new[]
-            {
-                "$ErrorActionPreference = 'SilentlyContinue'",
-                "Get-Process PromptManager | Stop-Process -Force",
-                "Remove-Item -LiteralPath \"$env:USERPROFILE\\Desktop\\Prompt Manager.lnk\" -Force",
-                "Remove-Item -LiteralPath \"$env:APPDATA\\Microsoft\\Windows\\Start Menu\\Programs\\Prompt Manager.lnk\" -Force",
-                "Remove-Item -LiteralPath \"HKLM:\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\PromptManager\" -Recurse -Force",
-                "Start-Process powershell.exe -WindowStyle Hidden -ArgumentList '-NoProfile -ExecutionPolicy Bypass -Command \"" + removeInstallCommand + "\"'"
-            });
+            var script = $$"""
+$ErrorActionPreference = 'SilentlyContinue'
+$installDirectory = Split-Path -Parent $MyInvocation.MyCommand.Path
+$manifest = Join-Path $installDirectory '{{InstallManifestName}}'
+$root = [System.IO.Path]::GetFullPath($installDirectory).TrimEnd('\', '/')
+$rootPrefix = $root + [System.IO.Path]::DirectorySeparatorChar
+$removedPaths = New-Object System.Collections.Generic.List[string]
+
+Get-Process PromptManager | Stop-Process -Force
+Remove-Item -LiteralPath "$env:USERPROFILE\Desktop\Prompt Manager.lnk" -Force
+Remove-Item -LiteralPath "$env:APPDATA\Microsoft\Windows\Start Menu\Programs\Prompt Manager.lnk" -Force
+Remove-Item -LiteralPath "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\PromptManager" -Recurse -Force
+
+if (Test-Path -LiteralPath $manifest) {
+    Get-Content -LiteralPath $manifest |
+        Where-Object { $_ -and -not $_.StartsWith('#') } |
+        Sort-Object Length -Descending |
+        ForEach-Object {
+            $relative = $_.Replace('/', [System.IO.Path]::DirectorySeparatorChar)
+            if (-not [System.IO.Path]::IsPathRooted($relative)) {
+                $candidate = [System.IO.Path]::GetFullPath((Join-Path $installDirectory $relative))
+                if ($candidate.StartsWith($rootPrefix, [StringComparison]::OrdinalIgnoreCase) -and (Test-Path -LiteralPath $candidate)) {
+                    Remove-Item -LiteralPath $candidate -Force
+                    $removedPaths.Add($candidate) | Out-Null
+                }
+            }
+        }
+}
+
+$directories = $removedPaths |
+    ForEach-Object { Split-Path -Parent $_ } |
+    Sort-Object Length -Descending -Unique
+
+foreach ($directory in $directories) {
+    $current = $directory
+    while ($current -and $current.StartsWith($rootPrefix, [StringComparison]::OrdinalIgnoreCase)) {
+        if ((Test-Path -LiteralPath $current) -and -not (Get-ChildItem -LiteralPath $current -Force)) {
+            Remove-Item -LiteralPath $current -Force
+            $current = Split-Path -Parent $current
+        }
+        else {
+            break
+        }
+    }
+}
+
+if ((Test-Path -LiteralPath $root) -and -not (Get-ChildItem -LiteralPath $root -Force)) {
+    Remove-Item -LiteralPath $root -Force
+}
+""";
 
             File.WriteAllText(uninstallScript, script);
-            File.WriteAllText(uninstallCommand, "@echo off" + Environment.NewLine + "powershell.exe -NoProfile -ExecutionPolicy Bypass -File \"%~dp0UninstallPromptManager.ps1\"");
+            File.WriteAllText(uninstallCommand, "@echo off" + Environment.NewLine + "powershell.exe -NoProfile -ExecutionPolicy Bypass -File \"%~dp0" + UninstallScriptName + "\"");
+            return new[]
+            {
+                ToManifestPath(UninstallScriptName),
+                ToManifestPath(UninstallCommandName)
+            };
         }
-
         private static void RegisterUninstallEntry(string installDirectory, string appExe)
         {
             using var key = Registry.LocalMachine.CreateSubKey(@"SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\PromptManager");
@@ -445,7 +607,7 @@ internal static class Program
 
             var uninstallCommand = Path.Combine(installDirectory, "Uninstall Prompt Manager.cmd");
             key.SetValue("DisplayName", AppName);
-            key.SetValue("DisplayVersion", "1.0.0");
+            key.SetValue("DisplayVersion", InstallerVersion);
             key.SetValue("Publisher", "Prompt Manager");
             key.SetValue("InstallLocation", installDirectory);
             key.SetValue("DisplayIcon", appExe);

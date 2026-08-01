@@ -1,9 +1,9 @@
-﻿# Prompt Manager Handoff Document
+# Prompt Manager Handoff Document
 
 Prepared: 2026-06-18
 Application: Prompt Manager
 Project type: Standalone Windows 11 desktop application
-Primary stack: C#, WPF, .NET 8, SQLite
+Primary stack: C#, WPF, .NET 10, SQLite
 
 ---
 
@@ -13,7 +13,7 @@ Prompt Manager is a local/offline Windows 11 desktop application for managing re
 
 The application supports creating, organizing, editing, versioning, searching, copying, archiving, importing, exporting, backing up, restoring, and deleting prompts. It also supports safe folder deletion, where folders and subfolders are removed but contained prompts are preserved by moving them to Unfiled.
 
-The latest updates add a reusable custom Type field with `Prompt` as the default value, structured Mode options, reusable Labels, variable extraction/insertion, review checks, duplicate warnings, version comparison, and required change notes for body text changes. The Notes field is now a larger rich-text editor with bold, italic, and font color controls while retaining plain-text notes for search and export readability.
+The latest updates add a tabbed properties panel, safer restore, fuller controlled-record version metadata, safer installer manifest handling, reusable custom Type values with `Prompt` as the default, structured Mode options, reusable Labels, variable extraction/insertion, review checks, duplicate warnings, and required change notes for controlled record changes. The Notes field is now a larger rich-text editor with bold, italic, and font color controls while retaining plain-text notes for search and export readability.
 
 The application is intentionally local-only. It does not include cloud accounts, login, hosted collaboration, telemetry, analytics, online AI execution, API deployment, encryption, or network connectivity.
 
@@ -53,7 +53,7 @@ Verified items:
 Latest installer artifact:
 
 ```text
-C:\Users\jcoan\OneDrive\Validation Library\Val II\Documents\New project 2\artifacts\installer\PromptManagerSetup.exe
+C:\dev\Prompt_Manager\artifacts\installer\PromptManagerSetup.exe
 ```
 
 Final installer details:
@@ -78,7 +78,7 @@ The installer lets the user choose a different installation directory.
 Workspace root:
 
 ```text
-C:\Users\jcoan\OneDrive\Validation Library\Val II\Documents\New project 2
+C:\dev\Prompt_Manager
 ```
 
 Solution file:
@@ -224,10 +224,10 @@ The color system uses pastel tones, with darker colors at the top level and ligh
 - Edit title, type, mode, labels, path, tags, status, formatted notes, and prompt body.
 - Insert `{{VariableName}}` placeholders and review detected variables.
 - Run local review checks for prompt quality and duplicate title/body matches.
-- Compare body versions and require a change note before saving body changes.
+- Compare controlled-record versions and require a change note before saving controlled record changes.
 - Save changes.
 - Move prompts between folders by changing the Properties panel Path dropdown and saving.
-- Create body-text version records when prompt text changes.
+- Create controlled-record version records when prompt fields change.
 - Copy prompt body to clipboard.
 - Track last-used date when copied.
 - Mark prompts as favorite.
@@ -285,7 +285,7 @@ Prompts in deleted folders are moved to Unfiled by setting FolderId = NULL.
 | `Prompts` | Current prompt records and metadata |
 | `PromptTypes` | Reusable custom Type values |
 | `PromptLabels` | Reusable label values |
-| `PromptVersions` | Version history for prompt body text |
+| `PromptVersions` | Version history for controlled prompt records |
 | `PromptSearch` | FTS5 virtual table, when available |
 
 ### Folders
@@ -384,7 +384,7 @@ Primary flow:
 Save button -> SaveSelectedPrompt -> PromptRepository.UpdatePrompt
 ```
 
-If prompt body text changes, the repository creates a new `PromptVersions` row.
+If controlled prompt fields change, the repository creates a new `PromptVersions` row.
 
 ### Delete Prompt
 

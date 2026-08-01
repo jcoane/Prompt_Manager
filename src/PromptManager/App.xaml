@@ -3,7 +3,7 @@
              xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
     <Application.Resources>
         <Color x:Key="InkColor">#21313D</Color>
-        <Color x:Key="MutedInkColor">#5D6E78</Color>
+        <Color x:Key="MutedInkColor">#40535D</Color>
         <Color x:Key="ShellTopColor">#809DB0</Color>
         <Color x:Key="ShellTopDarkColor">#55778F</Color>
         <Color x:Key="NavColor">#C7DDEB</Color>
@@ -14,7 +14,7 @@
         <Color x:Key="AccentColor">#8FBDA6</Color>
         <Color x:Key="AccentDarkColor">#5F9279</Color>
         <Color x:Key="RoseColor">#F2C6C2</Color>
-        <Color x:Key="LineColor">#C9D5D8</Color>
+        <Color x:Key="LineColor">#B7C8CE</Color>
 
         <SolidColorBrush x:Key="InkBrush" Color="{StaticResource InkColor}" />
         <SolidColorBrush x:Key="MutedInkBrush" Color="{StaticResource MutedInkColor}" />

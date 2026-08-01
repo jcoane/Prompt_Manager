@@ -1,4 +1,4 @@
-using System.ComponentModel;
+﻿using System.ComponentModel;
 using System.Diagnostics;
 using System.IO;
 using System.Text;
@@ -48,6 +48,17 @@ public partial class MainWindow : Window
         {
             LoadSelectedPromptNotes();
         }
+    }
+
+    protected override void OnClosing(CancelEventArgs e)
+    {
+        if (DataContext is MainViewModel viewModel && !viewModel.ConfirmClose())
+        {
+            e.Cancel = true;
+            return;
+        }
+
+        base.OnClosing(e);
     }
 
     private void UserManualMenuItem_Click(object sender, RoutedEventArgs e)
@@ -236,3 +247,4 @@ public partial class MainWindow : Window
         prompt.FormattedNotes = Encoding.UTF8.GetString(stream.ToArray());
     }
 }
+

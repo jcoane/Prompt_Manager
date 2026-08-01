@@ -1,4 +1,4 @@
-﻿<Window x:Class="PromptManager.MainWindow"
+<Window x:Class="PromptManager.MainWindow"
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
@@ -165,74 +165,101 @@
             <GridSplitter Grid.Column="3" Width="5" HorizontalAlignment="Stretch" Background="#B8C9D0" />
 
             <Border Grid.Column="4" Background="{StaticResource PanelBrush}" BorderBrush="{StaticResource LineBrush}" BorderThickness="1,0,0,0">
-                <ScrollViewer VerticalScrollBarVisibility="Auto">
-                    <StackPanel Margin="16">
-                        <TextBlock Text="Properties" FontSize="18" FontWeight="SemiBold" Margin="0,0,0,12" />
+                <Grid Margin="16">
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="*" />
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="Auto" />
+                    </Grid.RowDefinitions>
 
-                        <Border Background="{StaticResource PanelInsetBrush}" BorderBrush="{StaticResource LineBrush}" BorderThickness="1" Padding="12" Margin="0,0,0,12">
-                            <StackPanel>
-                                <TextBlock Text="Selected Item" FontWeight="SemiBold" Margin="0,0,0,8" />
-                                <TextBlock Text="{Binding SelectedPrompt.Title, TargetNullValue='No prompt selected'}" TextWrapping="Wrap" FontSize="16" />
-                                <TextBlock Text="{Binding SelectedPrompt.FolderPath}" Foreground="{StaticResource MutedInkBrush}" TextWrapping="Wrap" Margin="0,4,0,0" />
-                            </StackPanel>
-                        </Border>
+                    <TextBlock Grid.Row="0" Text="Properties" FontSize="18" FontWeight="SemiBold" Margin="0,0,0,12" />
 
-                        <TextBlock Text="Title" FontWeight="SemiBold" />
-                        <TextBox Text="{Binding SelectedPrompt.Title, UpdateSourceTrigger=PropertyChanged}" Margin="0,4,0,10" IsEnabled="{Binding HasSelection}" />
+                    <Border Grid.Row="1" Background="{StaticResource PanelInsetBrush}" BorderBrush="{StaticResource LineBrush}" BorderThickness="1" Padding="12" Margin="0,0,0,12">
+                        <StackPanel>
+                            <TextBlock Text="Selected Item" FontWeight="SemiBold" Margin="0,0,0,8" />
+                            <TextBlock Text="{Binding SelectedPrompt.Title, TargetNullValue='No prompt selected'}" TextWrapping="Wrap" FontSize="16" />
+                            <TextBlock Text="{Binding SelectedPrompt.FolderPath}" Foreground="{StaticResource MutedInkBrush}" TextWrapping="Wrap" Margin="0,4,0,0" />
+                        </StackPanel>
+                    </Border>
 
-                        <TextBlock Text="Type" FontWeight="SemiBold" />
-                        <ComboBox ItemsSource="{Binding TypeOptions}"
-                                  Text="{Binding SelectedPrompt.Type, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
-                                  IsEditable="True"
-                                  IsTextSearchEnabled="True"
-                                  Margin="0,4,0,10"
-                                  IsEnabled="{Binding HasSelection}" />
+                    <TabControl Grid.Row="2" Margin="0,0,0,12">
+                        <TabItem Header="Details">
+                            <ScrollViewer VerticalScrollBarVisibility="Auto">
+                                <StackPanel Margin="12">
+                                    <TextBlock Text="Title" FontWeight="SemiBold" />
+                                    <TextBox Text="{Binding SelectedPrompt.Title, UpdateSourceTrigger=PropertyChanged}" Margin="0,4,0,10" IsEnabled="{Binding HasSelection}" />
 
-                        <TextBlock Text="Mode" FontWeight="SemiBold" />
-                        <DockPanel Margin="0,4,0,10">
-                            <Button Content="Template"
-                                    Command="{Binding ApplyModeTemplateCommand}"
-                                    DockPanel.Dock="Right"
-                                    Margin="8,0,0,0"
-                                    Padding="10,4"
-                                    IsEnabled="{Binding HasSelection}" />
-                            <ComboBox ItemsSource="{Binding ModeOptions}"
-                                      SelectedItem="{Binding SelectedPrompt.Mode, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
-                                      IsEnabled="{Binding HasSelection}" />
-                        </DockPanel>
+                                    <TextBlock Text="Type" FontWeight="SemiBold" />
+                                    <ComboBox ItemsSource="{Binding TypeOptions}"
+                                              Text="{Binding SelectedPrompt.Type, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
+                                              IsEditable="True"
+                                              IsTextSearchEnabled="True"
+                                              Margin="0,4,0,10"
+                                              IsEnabled="{Binding HasSelection}" />
 
-                        <TextBlock Text="Path" FontWeight="SemiBold" />
-                        <ComboBox ItemsSource="{Binding FolderOptions}"
-                                  DisplayMemberPath="Path"
-                                  SelectedValuePath="Id"
-                                  SelectedValue="{Binding SelectedPromptFolderOptionId, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
-                                  Margin="0,4,0,10"
-                                  IsEnabled="{Binding HasSelection}" />
+                                    <TextBlock Text="Mode" FontWeight="SemiBold" />
+                                    <DockPanel Margin="0,4,0,10">
+                                        <Button Content="Template"
+                                                Command="{Binding ApplyModeTemplateCommand}"
+                                                DockPanel.Dock="Right"
+                                                Margin="8,0,0,0"
+                                                Padding="10,4"
+                                                IsEnabled="{Binding HasSelection}" />
+                                        <ComboBox ItemsSource="{Binding ModeOptions}"
+                                                  SelectedItem="{Binding SelectedPrompt.Mode, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
+                                                  IsEnabled="{Binding HasSelection}" />
+                                    </DockPanel>
 
-                        <TextBlock Text="Tags" FontWeight="SemiBold" />
-                        <TextBox Text="{Binding SelectedPrompt.Tags, UpdateSourceTrigger=PropertyChanged}" Margin="0,4,0,10" IsEnabled="{Binding HasSelection}" />
+                                    <TextBlock Text="Path" FontWeight="SemiBold" />
+                                    <ComboBox ItemsSource="{Binding FolderOptions}"
+                                              DisplayMemberPath="Path"
+                                              SelectedValuePath="Id"
+                                              SelectedValue="{Binding SelectedPromptFolderOptionId, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
+                                              Margin="0,4,0,10"
+                                              IsEnabled="{Binding HasSelection}" />
 
-                        <TextBlock Text="Labels" FontWeight="SemiBold" />
-                        <TextBox Text="{Binding SelectedPrompt.Labels, UpdateSourceTrigger=PropertyChanged}" Margin="0,4,0,6" IsEnabled="{Binding HasSelection}" />
-                        <DockPanel Margin="0,0,0,10">
-                            <Button Content="Add"
-                                    Command="{Binding AddLabelCommand}"
-                                    DockPanel.Dock="Right"
-                                    Margin="8,0,0,0"
-                                    Padding="12,4"
-                                    IsEnabled="{Binding HasSelection}" />
-                            <ComboBox ItemsSource="{Binding LabelOptions}"
-                                      SelectedItem="{Binding SelectedLabelToAdd, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
-                                      IsEnabled="{Binding HasSelection}" />
-                        </DockPanel>
+                                    <TextBlock Text="Tags" FontWeight="SemiBold" />
+                                    <TextBox Text="{Binding SelectedPrompt.Tags, UpdateSourceTrigger=PropertyChanged}" Margin="0,4,0,10" IsEnabled="{Binding HasSelection}" />
 
-                        <TextBlock Text="Status" FontWeight="SemiBold" />
-                        <ComboBox ItemsSource="{Binding Statuses}" SelectedItem="{Binding SelectedPrompt.Status}" Margin="0,4,0,10" IsEnabled="{Binding HasSelection}" />
+                                    <TextBlock Text="Labels" FontWeight="SemiBold" />
+                                    <TextBox Text="{Binding SelectedPrompt.Labels, UpdateSourceTrigger=PropertyChanged}" Margin="0,4,0,6" IsEnabled="{Binding HasSelection}" />
+                                    <DockPanel Margin="0,0,0,10">
+                                        <Button Content="Add"
+                                                Command="{Binding AddLabelCommand}"
+                                                DockPanel.Dock="Right"
+                                                Margin="8,0,0,0"
+                                                Padding="12,4"
+                                                IsEnabled="{Binding HasSelection}" />
+                                        <ComboBox ItemsSource="{Binding LabelOptions}"
+                                                  SelectedItem="{Binding SelectedLabelToAdd, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
+                                                  IsEnabled="{Binding HasSelection}" />
+                                    </DockPanel>
 
-                        <TextBlock Text="Notes" FontWeight="SemiBold" />
-                        <Border BorderBrush="{StaticResource LineBrush}" BorderThickness="1" Background="White" Margin="0,4,0,10">
-                            <DockPanel>
-                                <Border DockPanel.Dock="Top" Background="#EEF6F2" BorderBrush="{StaticResource LineBrush}" BorderThickness="0,0,0,1" Padding="6,5">
+                                    <TextBlock Text="Status" FontWeight="SemiBold" />
+                                    <ComboBox ItemsSource="{Binding Statuses}" SelectedItem="{Binding SelectedPrompt.Status}" Margin="0,4,0,12" IsEnabled="{Binding HasSelection}" />
+
+                                    <Border Background="{StaticResource PanelInsetBrush}" BorderBrush="{StaticResource LineBrush}" BorderThickness="1" Padding="10" Margin="0,0,0,12">
+                                        <StackPanel>
+                                            <TextBlock Text="Document Control" FontWeight="SemiBold" Margin="0,0,0,6" />
+                                            <TextBlock Text="{Binding SelectedPrompt.VersionLabel, StringFormat='Version: {0}', TargetNullValue='Version: -'}" />
+                                            <TextBlock Text="{Binding SelectedPrompt.UpdatedAt, StringFormat='Last Modified: {0:g}', TargetNullValue='Last Modified: -'}" />
+                                            <TextBlock Text="{Binding SelectedPrompt.LastUsedAt, StringFormat='Last Used: {0:g}', TargetNullValue='Last Used: -'}" />
+                                        </StackPanel>
+                                    </Border>
+                                </StackPanel>
+                            </ScrollViewer>
+                        </TabItem>
+
+                        <TabItem Header="Notes">
+                            <Grid Margin="12">
+                                <Grid.RowDefinitions>
+                                    <RowDefinition Height="Auto" />
+                                    <RowDefinition Height="*" />
+                                </Grid.RowDefinitions>
+
+                                <Border Grid.Row="0" Background="#EEF6F2" BorderBrush="{StaticResource LineBrush}" BorderThickness="1,1,1,0" Padding="6,5">
                                     <StackPanel Orientation="Horizontal">
                                         <Button x:Name="NotesBoldButton"
                                                 Content="B"
@@ -264,107 +291,126 @@
                                         </ComboBox>
                                     </StackPanel>
                                 </Border>
+
                                 <RichTextBox x:Name="PromptNotesEditor"
-                                             Height="260"
-                                             BorderThickness="0"
-                                             Padding="8"
+                                             Grid.Row="1"
+                                             MinHeight="420"
+                                             BorderBrush="{StaticResource LineBrush}"
+                                             BorderThickness="1"
+                                             Padding="10"
                                              VerticalScrollBarVisibility="Auto"
                                              TextChanged="PromptNotesEditor_TextChanged"
                                              IsEnabled="{Binding HasSelection}" />
-                            </DockPanel>
-                        </Border>
+                            </Grid>
+                        </TabItem>
 
-                        <DockPanel>
-                            <Button Content="Insert Variable"
-                                    DockPanel.Dock="Right"
-                                    Padding="10,4"
-                                    Margin="8,0,0,0"
-                                    Click="InsertVariableButton_Click"
-                                    IsEnabled="{Binding HasSelection}" />
-                            <TextBlock Text="Prompt Text" FontWeight="SemiBold" VerticalAlignment="Center" />
-                        </DockPanel>
-                        <TextBox x:Name="PromptBodyTextBox"
-                                 Text="{Binding SelectedPrompt.Body, UpdateSourceTrigger=PropertyChanged}"
-                                 Height="230"
-                                 TextWrapping="Wrap"
-                                 AcceptsReturn="True"
-                                 VerticalScrollBarVisibility="Auto"
-                                 Margin="0,4,0,12"
-                                 IsEnabled="{Binding HasSelection}" />
+                        <TabItem Header="Prompt">
+                            <Grid Margin="12">
+                                <Grid.RowDefinitions>
+                                    <RowDefinition Height="Auto" />
+                                    <RowDefinition Height="*" />
+                                    <RowDefinition Height="Auto" />
+                                </Grid.RowDefinitions>
 
-                        <Border Background="{StaticResource PanelInsetBrush}" BorderBrush="{StaticResource LineBrush}" BorderThickness="1" Padding="10" Margin="0,0,0,12">
-                            <StackPanel>
-                                <TextBlock Text="Variables" FontWeight="SemiBold" Margin="0,0,0,6" />
-                                <ItemsControl ItemsSource="{Binding PromptVariables}">
-                                    <ItemsControl.ItemTemplate>
-                                        <DataTemplate>
-                                            <TextBlock Text="{Binding}" Margin="0,1" />
-                                        </DataTemplate>
-                                    </ItemsControl.ItemTemplate>
-                                </ItemsControl>
-                            </StackPanel>
-                        </Border>
+                                <DockPanel Grid.Row="0" Margin="0,0,0,6">
+                                    <Button Content="Insert Variable"
+                                            DockPanel.Dock="Right"
+                                            Padding="10,4"
+                                            Margin="8,0,0,0"
+                                            Click="InsertVariableButton_Click"
+                                            IsEnabled="{Binding HasSelection}" />
+                                    <TextBlock Text="Prompt Text" FontWeight="SemiBold" VerticalAlignment="Center" />
+                                </DockPanel>
 
-                        <Border Background="#EEF6F2" BorderBrush="{StaticResource LineBrush}" BorderThickness="1" Padding="10" Margin="0,0,0,12">
-                            <StackPanel>
-                                <TextBlock Text="Review Checks" FontWeight="SemiBold" Margin="0,0,0,6" />
-                                <TextBlock Text="Quality" Foreground="{StaticResource MutedInkBrush}" FontWeight="SemiBold" />
-                                <ItemsControl ItemsSource="{Binding QualityIssues}" Margin="0,2,0,8">
-                                    <ItemsControl.ItemTemplate>
-                                        <DataTemplate>
-                                            <TextBlock Text="{Binding StringFormat='- {0}'}" TextWrapping="Wrap" Margin="0,1" />
-                                        </DataTemplate>
-                                    </ItemsControl.ItemTemplate>
-                                </ItemsControl>
-                                <TextBlock Text="Duplicates" Foreground="{StaticResource MutedInkBrush}" FontWeight="SemiBold" />
-                                <ItemsControl ItemsSource="{Binding DuplicateWarnings}" Margin="0,2,0,0">
-                                    <ItemsControl.ItemTemplate>
-                                        <DataTemplate>
-                                            <TextBlock Text="{Binding StringFormat='- {0}'}" TextWrapping="Wrap" Margin="0,1" />
-                                        </DataTemplate>
-                                    </ItemsControl.ItemTemplate>
-                                </ItemsControl>
-                            </StackPanel>
-                        </Border>
-
-                        <Border Background="#F6E3E0" BorderBrush="#E3B0AB" BorderThickness="1" Padding="10" Margin="0,0,0,12">
-                            <StackPanel>
-                                <TextBlock Text="Version Control" FontWeight="SemiBold" Margin="0,0,0,6" />
-                                <TextBlock Text="{Binding VersionComparisonText}" TextWrapping="Wrap" Margin="0,0,0,8" />
-                                <TextBlock Text="Change Note" FontWeight="SemiBold" />
-                                <TextBox Text="{Binding ChangeNote, UpdateSourceTrigger=PropertyChanged}"
-                                         Height="56"
+                                <TextBox x:Name="PromptBodyTextBox"
+                                         Grid.Row="1"
+                                         Text="{Binding SelectedPrompt.Body, UpdateSourceTrigger=PropertyChanged}"
+                                         MinHeight="430"
                                          TextWrapping="Wrap"
                                          AcceptsReturn="True"
-                                         Margin="0,4,0,0"
+                                         VerticalScrollBarVisibility="Auto"
+                                         VerticalContentAlignment="Top"
+                                         Margin="0,0,0,12"
                                          IsEnabled="{Binding HasSelection}" />
-                            </StackPanel>
-                        </Border>
 
-                        <UniformGrid Columns="2" Rows="4" Margin="0,0,0,12">
-                            <Button Content="Save" Command="{Binding SaveCommand}" Margin="0,0,5,6" Padding="10,7" />
-                            <Button Content="Copy" Command="{Binding CopyCommand}" Margin="5,0,0,6" Padding="10,7" />
-                            <Button Content="Favorite" Command="{Binding ToggleFavoriteCommand}" Margin="0,0,5,6" Padding="10,7" />
-                            <Button Content="Archive" Command="{Binding ArchiveCommand}" Margin="5,0,0,6" Padding="10,7" />
-                            <Button Content="Delete" Command="{Binding DeleteCommand}" Margin="0,0,5,6" Padding="10,7" Background="{StaticResource RoseBrush}" BorderBrush="#C78F89" />
-                            <Button Content="Restore" Command="{Binding RestorePromptCommand}" Margin="5,0,0,6" Padding="10,7" />
-                            <Button Content="Refresh" Command="{Binding RefreshCommand}" Margin="0,0,5,0" Padding="10,7" />
-                        </UniformGrid>
+                                <Border Grid.Row="2" Background="{StaticResource PanelInsetBrush}" BorderBrush="{StaticResource LineBrush}" BorderThickness="1" Padding="10">
+                                    <StackPanel>
+                                        <TextBlock Text="Variables" FontWeight="SemiBold" Margin="0,0,0,6" />
+                                        <ItemsControl ItemsSource="{Binding PromptVariables}">
+                                            <ItemsControl.ItemTemplate>
+                                                <DataTemplate>
+                                                    <TextBlock Text="{Binding}" Margin="0,1" />
+                                                </DataTemplate>
+                                            </ItemsControl.ItemTemplate>
+                                        </ItemsControl>
+                                    </StackPanel>
+                                </Border>
+                            </Grid>
+                        </TabItem>
 
-                        <Border Background="#F6E3E0" BorderBrush="#E3B0AB" BorderThickness="1" Padding="10" Margin="0,0,0,12">
-                            <StackPanel>
-                                <TextBlock Text="Document Control" FontWeight="SemiBold" Margin="0,0,0,6" />
-                                <TextBlock Text="{Binding SelectedPrompt.VersionLabel, StringFormat='Version: {0}', TargetNullValue='Version: -'}" />
-                                <TextBlock Text="{Binding SelectedPrompt.UpdatedAt, StringFormat='Last Modified: {0:g}', TargetNullValue='Last Modified: -'}" />
-                                <TextBlock Text="{Binding SelectedPrompt.LastUsedAt, StringFormat='Last Used: {0:g}', TargetNullValue='Last Used: -'}" />
-                            </StackPanel>
-                        </Border>
+                        <TabItem Header="Review">
+                            <ScrollViewer VerticalScrollBarVisibility="Auto">
+                                <StackPanel Margin="12">
+                                    <Border Background="#EEF6F2" BorderBrush="{StaticResource LineBrush}" BorderThickness="1" Padding="10" Margin="0,0,0,12">
+                                        <StackPanel>
+                                            <TextBlock Text="Review Checks" FontWeight="SemiBold" Margin="0,0,0,6" />
+                                            <TextBlock Text="Quality" Foreground="{StaticResource MutedInkBrush}" FontWeight="SemiBold" />
+                                            <ItemsControl ItemsSource="{Binding QualityIssues}" Margin="0,2,0,8">
+                                                <ItemsControl.ItemTemplate>
+                                                    <DataTemplate>
+                                                        <TextBlock Text="{Binding StringFormat='- {0}'}" TextWrapping="Wrap" Margin="0,1" />
+                                                    </DataTemplate>
+                                                </ItemsControl.ItemTemplate>
+                                            </ItemsControl>
+                                            <TextBlock Text="Duplicates" Foreground="{StaticResource MutedInkBrush}" FontWeight="SemiBold" />
+                                            <ItemsControl ItemsSource="{Binding DuplicateWarnings}" Margin="0,2,0,0">
+                                                <ItemsControl.ItemTemplate>
+                                                    <DataTemplate>
+                                                        <TextBlock Text="{Binding StringFormat='- {0}'}" TextWrapping="Wrap" Margin="0,1" />
+                                                    </DataTemplate>
+                                                </ItemsControl.ItemTemplate>
+                                            </ItemsControl>
+                                        </StackPanel>
+                                    </Border>
+                                </StackPanel>
+                            </ScrollViewer>
+                        </TabItem>
 
-                        <TextBlock Text="{Binding StatusMessage}" Foreground="{StaticResource MutedInkBrush}" TextWrapping="Wrap" />
-                    </StackPanel>
-                </ScrollViewer>
-            </Border>
-        </Grid>
+                        <TabItem Header="Versions">
+                            <ScrollViewer VerticalScrollBarVisibility="Auto">
+                                <StackPanel Margin="12">
+                                    <Border Background="#F6E3E0" BorderBrush="#C78F89" BorderThickness="1" Padding="10" Margin="0,0,0,12">
+                                        <StackPanel>
+                                            <TextBlock Text="Version Control" FontWeight="SemiBold" Margin="0,0,0,6" />
+                                            <TextBlock Text="{Binding VersionComparisonText}" TextWrapping="Wrap" Margin="0,0,0,8" />
+                                            <TextBlock Text="Change Note" FontWeight="SemiBold" />
+                                            <TextBox Text="{Binding ChangeNote, UpdateSourceTrigger=PropertyChanged}"
+                                                     Height="84"
+                                                     TextWrapping="Wrap"
+                                                     AcceptsReturn="True"
+                                                     Margin="0,4,0,0"
+                                                     VerticalContentAlignment="Top"
+                                                     IsEnabled="{Binding HasSelection}" />
+                                        </StackPanel>
+                                    </Border>
+                                </StackPanel>
+                            </ScrollViewer>
+                        </TabItem>
+                    </TabControl>
+
+                    <UniformGrid Grid.Row="3" Columns="2" Margin="0,0,0,10">
+                        <Button Content="Save" Command="{Binding SaveCommand}" Margin="0,0,5,6" Padding="10,7" />
+                        <Button Content="Copy" Command="{Binding CopyCommand}" Margin="5,0,0,6" Padding="10,7" />
+                        <Button Content="Favorite" Command="{Binding ToggleFavoriteCommand}" Margin="0,0,5,6" Padding="10,7" />
+                        <Button Content="Archive" Command="{Binding ArchiveCommand}" Margin="5,0,0,6" Padding="10,7" />
+                        <Button Content="Delete" Command="{Binding DeleteCommand}" Margin="0,0,5,6" Padding="10,7" Background="{StaticResource RoseBrush}" BorderBrush="#C78F89" />
+                        <Button Content="Restore" Command="{Binding RestorePromptCommand}" Margin="5,0,0,6" Padding="10,7" />
+                        <Button Content="Refresh" Command="{Binding RefreshCommand}" Margin="0,0,5,0" Padding="10,7" />
+                    </UniformGrid>
+
+                    <TextBlock Grid.Row="4" Text="{Binding StatusMessage}" Foreground="{StaticResource MutedInkBrush}" TextWrapping="Wrap" />
+                </Grid>
+            </Border>        </Grid>
 
         <Border Grid.Row="3" Background="#E9F2EE" BorderBrush="{StaticResource LineBrush}" BorderThickness="0,1,0,0">
             <DockPanel Margin="10,0">

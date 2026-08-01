@@ -1,4 +1,4 @@
-using System.IO;
+﻿using System.IO;
 using System.Text.Json;
 using System.Windows;
 using Microsoft.Win32;
@@ -88,7 +88,7 @@ public sealed class PromptFileService
         return dialog.FileName;
     }
 
-    public bool Restore()
+    public string? Restore()
     {
         var dialog = new OpenFileDialog
         {
@@ -99,22 +99,24 @@ public sealed class PromptFileService
 
         if (dialog.ShowDialog() != true)
         {
-            return false;
+            return null;
         }
 
+        PromptRepository.ValidateBackupDatabase(dialog.FileName);
+
         var confirm = MessageBox.Show(
-            "Restore this database backup? The current local prompt library will be replaced.",
+            "Restore this database backup? The current local prompt library will be replaced after a safety backup is created.",
             "Restore Prompt Manager",
             MessageBoxButton.YesNo,
             MessageBoxImage.Warning);
 
         if (confirm != MessageBoxResult.Yes)
         {
-            return false;
+            return null;
         }
 
-        _repository.RestoreFrom(dialog.FileName);
-        return true;
+        return _repository.RestoreFrom(dialog.FileName) ?? "";
     }
 }
+
 

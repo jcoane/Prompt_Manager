@@ -1,10 +1,12 @@
-﻿using System.Reflection;
+using System.IO;
+using System.Reflection;
 using PromptManager.Data;
 using PromptManager.Models;
 using PromptManager.Services;
 using PromptManager.ViewModels;
 
-var repository = new PromptRepository();
+var databasePath = CreateSmokeDatabasePath();
+var repository = new PromptRepository(databasePath);
 repository.Initialize();
 var fileService = new PromptFileService(repository);
 var viewModel = new MainViewModel(repository, fileService);
@@ -67,6 +69,8 @@ finally
     {
         repository.DeleteFolder(parentId);
     }
+
+    DeleteSmokeDatabase(databasePath);
 }
 
 static void RefreshFolders(MainViewModel viewModel, int? selectedFolderId, bool preserveCurrentSelection)
@@ -100,5 +104,40 @@ static void Assert(bool condition, string message)
     if (!condition)
     {
         throw new InvalidOperationException(message);
+    }
+}
+static string CreateSmokeDatabasePath()
+{
+    return Path.Combine(Path.GetTempPath(), "PromptManagerSmoke-" + Guid.NewGuid().ToString("N") + ".db");
+}
+
+static void DeleteSmokeDatabase(string databasePath)
+{
+    Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools();
+    GC.Collect();
+    GC.WaitForPendingFinalizers();
+
+    foreach (var path in new[] { databasePath, databasePath + "-shm", databasePath + "-wal" })
+    {
+        for (var attempt = 0; attempt < 5; attempt++)
+        {
+            try
+            {
+                if (File.Exists(path))
+                {
+                    File.Delete(path);
+                }
+
+                break;
+            }
+            catch (IOException) when (attempt < 4)
+            {
+                System.Threading.Thread.Sleep(100);
+            }
+            catch (UnauthorizedAccessException) when (attempt < 4)
+            {
+                System.Threading.Thread.Sleep(100);
+            }
+        }
     }
 }

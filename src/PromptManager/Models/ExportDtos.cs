@@ -4,7 +4,7 @@ public sealed class PromptExportPackage
 {
     public string Format { get; set; } = "PromptManager.Export";
 
-    public string FormatVersion { get; set; } = "1.2";
+    public string FormatVersion { get; set; } = "1.3";
 
     public DateTime ExportedAt { get; set; } = DateTime.Now;
 
@@ -63,9 +63,29 @@ public sealed class PromptVersionExportDto
 {
     public int VersionNumber { get; set; }
 
+    public int? FolderId { get; set; }
+
+    public string Title { get; set; } = "";
+
+    public string Type { get; set; } = "Prompt";
+
+    public string Mode { get; set; } = "Text";
+
+    public string Labels { get; set; } = "";
+
     public string Body { get; set; } = "";
+
+    public string Status { get; set; } = "Draft";
+
+    public string Tags { get; set; } = "";
+
+    public string Notes { get; set; } = "";
+
+    public string FormattedNotes { get; set; } = "";
 
     public string ChangeNote { get; set; } = "";
 
     public DateTime CreatedAt { get; set; }
 }
+
+

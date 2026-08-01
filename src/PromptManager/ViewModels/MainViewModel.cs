@@ -1,4 +1,4 @@
-﻿using System.Collections.ObjectModel;
+using System.Collections.ObjectModel;
 using System.ComponentModel;
 using System.Text.RegularExpressions;
 using System.Windows;
@@ -14,6 +14,9 @@ public sealed class MainViewModel : ObservableObject
     private readonly PromptRepository _repository;
     private readonly PromptFileService _fileService;
     private PromptRow? _subscribedPrompt;
+    private PromptSnapshot? _selectedPromptSnapshot;
+    private bool _isInternalPromptSelection;
+    private bool _isInternalFolderSelection;
     private string _searchText = "";
     private FolderNode? _selectedFolder;
     private PromptRow? _selectedPrompt;
@@ -129,6 +132,17 @@ public sealed class MainViewModel : ObservableObject
         get => _searchText;
         set
         {
+            if (string.Equals(_searchText, value, StringComparison.Ordinal))
+            {
+                return;
+            }
+
+            if (!ConfirmDiscardUnsavedChanges())
+            {
+                OnPropertyChanged(nameof(SearchText));
+                return;
+            }
+
             if (SetProperty(ref _searchText, value))
             {
                 TryRefreshPrompts();
@@ -141,6 +155,17 @@ public sealed class MainViewModel : ObservableObject
         get => _selectedFilter;
         set
         {
+            if (ReferenceEquals(_selectedFilter, value))
+            {
+                return;
+            }
+
+            if (!ConfirmDiscardUnsavedChanges())
+            {
+                OnPropertyChanged(nameof(SelectedFilter));
+                return;
+            }
+
             if (SetProperty(ref _selectedFilter, value))
             {
                 TryRefreshPrompts();
@@ -154,6 +179,17 @@ public sealed class MainViewModel : ObservableObject
         get => _selectedFolder;
         set
         {
+            if (ReferenceEquals(_selectedFolder, value))
+            {
+                return;
+            }
+
+            if (!_isInternalFolderSelection && !ConfirmDiscardUnsavedChanges())
+            {
+                OnPropertyChanged(nameof(SelectedFolder));
+                return;
+            }
+
             if (SetProperty(ref _selectedFolder, value))
             {
                 TryRefreshPrompts();
@@ -169,40 +205,26 @@ public sealed class MainViewModel : ObservableObject
         get => _selectedPrompt;
         set
         {
-            if (SetProperty(ref _selectedPrompt, value))
+            if (ReferenceEquals(_selectedPrompt, value))
             {
-                if (_subscribedPrompt is not null)
-                {
-                    _subscribedPrompt.PropertyChanged -= SelectedPrompt_PropertyChanged;
-                }
-
-                _subscribedPrompt = value;
-                if (_subscribedPrompt is not null)
-                {
-                    _subscribedPrompt.PropertyChanged += SelectedPrompt_PropertyChanged;
-                }
-
-                OnPropertyChanged(nameof(HasSelection));
-                SaveCommand.RaiseCanExecuteChanged();
-                AddLabelCommand.RaiseCanExecuteChanged();
-                ApplyModeTemplateCommand.RaiseCanExecuteChanged();
-                CopyCommand.RaiseCanExecuteChanged();
-                ToggleFavoriteCommand.RaiseCanExecuteChanged();
-                ArchiveCommand.RaiseCanExecuteChanged();
-                RestorePromptCommand.RaiseCanExecuteChanged();
-                DeleteCommand.RaiseCanExecuteChanged();
-                _selectedPromptOriginalFolderId = value?.FolderId;
-                _selectedPromptFolderOptionId = value?.FolderId ?? FolderOption.UnfiledId;
-                OnPropertyChanged(nameof(SelectedPromptFolderOptionId));
-                ChangeNote = "";
-                RefreshSelectedPromptAnalysis();
+                return;
             }
+
+            if (!_isInternalPromptSelection && !ConfirmDiscardUnsavedChanges())
+            {
+                OnPropertyChanged(nameof(SelectedPrompt));
+                return;
+            }
+
+            SetSelectedPrompt(value);
         }
     }
 
     public bool HasSelection => SelectedPrompt is not null;
 
     public bool HasSelectedFolder => SelectedFolder is not null;
+
+    public bool HasUnsavedChanges => SelectedPrompt is not null && _selectedPromptSnapshot is not null && !_selectedPromptSnapshot.Matches(SelectedPrompt);
 
     public int SelectedPromptFolderOptionId
     {
@@ -265,6 +287,11 @@ public sealed class MainViewModel : ObservableObject
 
     private void RefreshAll()
     {
+        if (!ConfirmDiscardUnsavedChanges())
+        {
+            return;
+        }
+
         try
         {
             RefreshFolders();
@@ -300,20 +327,28 @@ public sealed class MainViewModel : ObservableObject
             FolderTree.Add(folder);
         }
 
-        if (!targetFolderId.HasValue)
+        _isInternalFolderSelection = true;
+        try
         {
+            if (!targetFolderId.HasValue)
+            {
+                SelectedFolder = null;
+                return;
+            }
+
+            if (TrySelectFolder(FolderTree, targetFolderId.Value, out var selectedFolder))
+            {
+                SelectedFolder = selectedFolder;
+                return;
+            }
+
+            allFolders.IsSelected = true;
             SelectedFolder = null;
-            return;
         }
-
-        if (TrySelectFolder(FolderTree, targetFolderId.Value, out var selectedFolder))
+        finally
         {
-            SelectedFolder = selectedFolder;
-            return;
+            _isInternalFolderSelection = false;
         }
-
-        allFolders.IsSelected = true;
-        SelectedFolder = null;
     }
 
     private void RefreshFolderOptions(IEnumerable<FolderNode> folders)
@@ -421,9 +456,9 @@ public sealed class MainViewModel : ObservableObject
             Prompts.Add(row);
         }
 
-        SelectedPrompt = previousId.HasValue
+        SetSelectedPromptFromRefresh(previousId.HasValue
             ? Prompts.FirstOrDefault(prompt => prompt.Id == previousId.Value) ?? Prompts.FirstOrDefault()
-            : Prompts.FirstOrDefault();
+            : Prompts.FirstOrDefault());
 
         ResultSummary = Prompts.Count == 1 ? "1 prompt" : Prompts.Count + " prompts";
         OnPropertyChanged(nameof(RegisterTitle));
@@ -443,6 +478,11 @@ public sealed class MainViewModel : ObservableObject
 
     private void CreateFolder()
     {
+        if (!ConfirmDiscardUnsavedChanges())
+        {
+            return;
+        }
+
         var dialog = new TextInputDialog("New Folder", "Folder name", "New Folder")
         {
             Owner = Application.Current.MainWindow
@@ -468,6 +508,11 @@ public sealed class MainViewModel : ObservableObject
 
     private void DeleteSelectedFolder()
     {
+        if (!ConfirmDiscardUnsavedChanges())
+        {
+            return;
+        }
+
         if (SelectedFolder is null)
         {
             return;
@@ -502,6 +547,11 @@ public sealed class MainViewModel : ObservableObject
 
     private void CreatePrompt()
     {
+        if (!ConfirmDiscardUnsavedChanges())
+        {
+            return;
+        }
+
         try
         {
             SelectedFilter = Filters.First(filter => filter.Kind == PromptFilterKind.All);
@@ -525,11 +575,11 @@ public sealed class MainViewModel : ObservableObject
 
         try
         {
-            var bodyChanged = !string.Equals(_repository.GetCurrentPromptBody(SelectedPrompt.Id), SelectedPrompt.Body, StringComparison.Ordinal);
-            if (bodyChanged && string.IsNullOrWhiteSpace(ChangeNote))
+            var recordChanged = _repository.HasControlledRecordChanges(SelectedPrompt);
+            if (recordChanged && string.IsNullOrWhiteSpace(ChangeNote))
             {
-                StatusMessage = "Enter a change note before saving body text changes.";
-                MessageBox.Show("Enter a change note before saving body text changes.", "Prompt Manager", MessageBoxButton.OK, MessageBoxImage.Information);
+                StatusMessage = "Enter a change note before saving controlled record changes.";
+                MessageBox.Show("Enter a change note before saving controlled record changes.", "Prompt Manager", MessageBoxButton.OK, MessageBoxImage.Information);
                 return;
             }
 
@@ -566,10 +616,16 @@ public sealed class MainViewModel : ObservableObject
         try
         {
             Clipboard.SetText(SelectedPrompt.Body ?? "");
-            _repository.MarkUsed(SelectedPrompt.Id);
-            RefreshCounts();
-            RefreshPrompts(SelectedPrompt.Id);
-            StatusMessage = "Copied prompt text to the clipboard.";
+            if (!HasUnsavedChanges)
+            {
+                _repository.MarkUsed(SelectedPrompt.Id);
+                RefreshCounts();
+                RefreshPrompts(SelectedPrompt.Id);
+                StatusMessage = "Copied prompt text to the clipboard.";
+                return;
+            }
+
+            StatusMessage = "Copied current unsaved prompt text. Save changes to update the library record.";
         }
         catch (Exception ex)
         {
@@ -579,6 +635,11 @@ public sealed class MainViewModel : ObservableObject
 
     private void ToggleFavorite()
     {
+        if (!ConfirmDiscardUnsavedChanges())
+        {
+            return;
+        }
+
         if (SelectedPrompt is null)
         {
             return;
@@ -599,6 +660,11 @@ public sealed class MainViewModel : ObservableObject
 
     private void ArchiveSelectedPrompt()
     {
+        if (!ConfirmDiscardUnsavedChanges())
+        {
+            return;
+        }
+
         if (SelectedPrompt is null)
         {
             return;
@@ -630,6 +696,11 @@ public sealed class MainViewModel : ObservableObject
 
     private void RestoreSelectedPrompt()
     {
+        if (!ConfirmDiscardUnsavedChanges())
+        {
+            return;
+        }
+
         if (SelectedPrompt is null)
         {
             return;
@@ -650,6 +721,11 @@ public sealed class MainViewModel : ObservableObject
 
     private void DeleteSelectedPrompt()
     {
+        if (!ConfirmDiscardUnsavedChanges())
+        {
+            return;
+        }
+
         if (SelectedPrompt is null)
         {
             return;
@@ -682,6 +758,11 @@ public sealed class MainViewModel : ObservableObject
 
     private void ImportPrompts()
     {
+        if (!ConfirmDiscardUnsavedChanges())
+        {
+            return;
+        }
+
         try
         {
             var imported = _fileService.Import();
@@ -735,13 +816,21 @@ public sealed class MainViewModel : ObservableObject
 
     private void RestoreDatabase()
     {
+        if (!ConfirmDiscardUnsavedChanges())
+        {
+            return;
+        }
+
         try
         {
-            if (_fileService.Restore())
+            var safetyBackup = _fileService.Restore();
+            if (safetyBackup is not null)
             {
                 SelectedFolder = null;
                 RefreshAll();
-                StatusMessage = "Database restored.";
+                StatusMessage = string.IsNullOrWhiteSpace(safetyBackup)
+                    ? "Database restored. No previous database was present."
+                    : "Database restored. Previous library safety backup: " + safetyBackup;
             }
         }
         catch (Exception ex)
@@ -752,10 +841,12 @@ public sealed class MainViewModel : ObservableObject
 
     private void SelectedPrompt_PropertyChanged(object? sender, PropertyChangedEventArgs e)
     {
-        if (e.PropertyName is nameof(PromptRow.Title) or nameof(PromptRow.Body) or nameof(PromptRow.Tags) or nameof(PromptRow.Labels) or nameof(PromptRow.Mode) or nameof(PromptRow.Status))
+        if (e.PropertyName is nameof(PromptRow.Title) or nameof(PromptRow.Body) or nameof(PromptRow.Tags) or nameof(PromptRow.Labels) or nameof(PromptRow.Type) or nameof(PromptRow.Mode) or nameof(PromptRow.Status) or nameof(PromptRow.Notes) or nameof(PromptRow.FormattedNotes) or nameof(PromptRow.FolderId))
         {
             RefreshSelectedPromptAnalysis();
         }
+
+        OnPropertyChanged(nameof(HasUnsavedChanges));
     }
 
     private void AddSelectedLabel()
@@ -801,6 +892,90 @@ public sealed class MainViewModel : ObservableObject
         if (confirm == MessageBoxResult.Yes)
         {
             SelectedPrompt.Body = SelectedPrompt.Body.TrimEnd() + Environment.NewLine + Environment.NewLine + template;
+        }
+    }
+
+    public bool ConfirmClose()
+    {
+        return ConfirmDiscardUnsavedChanges();
+    }
+
+    private bool ConfirmDiscardUnsavedChanges()
+    {
+        if (!HasUnsavedChanges || SelectedPrompt is null)
+        {
+            return true;
+        }
+
+        var result = MessageBox.Show(
+            "Save changes before continuing?",
+            "Unsaved Changes",
+            MessageBoxButton.YesNoCancel,
+            MessageBoxImage.Warning);
+
+        if (result == MessageBoxResult.Cancel)
+        {
+            StatusMessage = "Action canceled. Unsaved changes remain.";
+            return false;
+        }
+
+        if (result == MessageBoxResult.Yes)
+        {
+            SaveSelectedPrompt();
+            return !HasUnsavedChanges;
+        }
+
+        _selectedPromptSnapshot?.Restore(SelectedPrompt);
+        OnPropertyChanged(nameof(HasUnsavedChanges));
+        RefreshSelectedPromptAnalysis();
+        StatusMessage = "Unsaved changes discarded.";
+        return true;
+    }
+
+    private void SetSelectedPromptFromRefresh(PromptRow? prompt)
+    {
+        _isInternalPromptSelection = true;
+        try
+        {
+            SetSelectedPrompt(prompt);
+        }
+        finally
+        {
+            _isInternalPromptSelection = false;
+        }
+    }
+
+    private void SetSelectedPrompt(PromptRow? value)
+    {
+        if (SetProperty(ref _selectedPrompt, value))
+        {
+            if (_subscribedPrompt is not null)
+            {
+                _subscribedPrompt.PropertyChanged -= SelectedPrompt_PropertyChanged;
+            }
+
+            _subscribedPrompt = value;
+            if (_subscribedPrompt is not null)
+            {
+                _subscribedPrompt.PropertyChanged += SelectedPrompt_PropertyChanged;
+            }
+
+            _selectedPromptSnapshot = value is null ? null : PromptSnapshot.From(value);
+            OnPropertyChanged(nameof(HasSelection));
+            OnPropertyChanged(nameof(HasUnsavedChanges));
+            SaveCommand.RaiseCanExecuteChanged();
+            AddLabelCommand.RaiseCanExecuteChanged();
+            ApplyModeTemplateCommand.RaiseCanExecuteChanged();
+            CopyCommand.RaiseCanExecuteChanged();
+            ToggleFavoriteCommand.RaiseCanExecuteChanged();
+            ArchiveCommand.RaiseCanExecuteChanged();
+            RestorePromptCommand.RaiseCanExecuteChanged();
+            DeleteCommand.RaiseCanExecuteChanged();
+            _selectedPromptOriginalFolderId = value?.FolderId;
+            _selectedPromptFolderOptionId = value?.FolderId ?? FolderOption.UnfiledId;
+            OnPropertyChanged(nameof(SelectedPromptFolderOptionId));
+            ChangeNote = "";
+            RefreshSelectedPromptAnalysis();
         }
     }
 
@@ -1014,11 +1189,74 @@ public sealed class MainViewModel : ObservableObject
         return count;
     }
 
+    private sealed record PromptSnapshot(
+        int? FolderId,
+        string Type,
+        string Mode,
+        string Labels,
+        string Title,
+        PromptStatus Status,
+        string Tags,
+        string Notes,
+        string FormattedNotes,
+        string Body)
+    {
+        public static PromptSnapshot From(PromptRow prompt)
+        {
+            return new PromptSnapshot(
+                prompt.FolderId,
+                prompt.Type,
+                prompt.Mode,
+                prompt.Labels,
+                prompt.Title,
+                prompt.Status,
+                prompt.Tags,
+                prompt.Notes,
+                prompt.FormattedNotes,
+                prompt.Body);
+        }
+
+        public void Restore(PromptRow prompt)
+        {
+            prompt.FolderId = FolderId;
+            prompt.Type = Type;
+            prompt.Mode = Mode;
+            prompt.Labels = Labels;
+            prompt.Title = Title;
+            prompt.Status = Status;
+            prompt.Tags = Tags;
+            prompt.Notes = Notes;
+            prompt.FormattedNotes = FormattedNotes;
+            prompt.Body = Body;
+        }
+
+        public bool Matches(PromptRow prompt)
+        {
+            return FolderId == prompt.FolderId
+                && string.Equals(Type, prompt.Type, StringComparison.Ordinal)
+                && string.Equals(Mode, prompt.Mode, StringComparison.Ordinal)
+                && string.Equals(Labels, prompt.Labels, StringComparison.Ordinal)
+                && string.Equals(Title, prompt.Title, StringComparison.Ordinal)
+                && Status == prompt.Status
+                && string.Equals(Tags, prompt.Tags, StringComparison.Ordinal)
+                && string.Equals(Notes, prompt.Notes, StringComparison.Ordinal)
+                && string.Equals(FormattedNotes, prompt.FormattedNotes, StringComparison.Ordinal)
+                && string.Equals(Body, prompt.Body, StringComparison.Ordinal);
+        }
+    }
+
     private static void ShowError(Exception ex)
     {
         MessageBox.Show(ex.Message, "Prompt Manager", MessageBoxButton.OK, MessageBoxImage.Error);
     }
 }
+
+
+
+
+
+
+
 
 
 

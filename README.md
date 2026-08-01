@@ -1,11 +1,11 @@
-﻿# Prompt Manager
+# Prompt Manager
 
 Prompt Manager is a standalone Windows 11 desktop application for managing reusable prompts locally.
 
 ## Stack
 
 - C# / WPF
-- .NET 8 Windows desktop
+- .NET 10 Windows desktop
 - SQLite local database
 - SQLite FTS5 search when available, with a local `LIKE` fallback
 - Local JSON import/export
@@ -46,7 +46,7 @@ The local database is created under:
 - Draft, review, approved, and retired statuses
 - Favorites, recently used, archive, restore, permanent prompt delete, and safe folder delete
 - Prompt path dropdown for moving prompts between folders
-- Prompt version history with required change notes for body changes
+- Prompt version history with required change notes for controlled record changes
 - Version comparison summary
 - Full-text prompt search over type, mode, labels, title, body, tags, and notes where SQLite FTS5 is available
 - Copy prompt text to clipboard with last-used tracking

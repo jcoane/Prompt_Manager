@@ -1,10 +1,12 @@
-﻿using System.Reflection;
+using System.IO;
+using System.Reflection;
 using PromptManager.Data;
 using PromptManager.Models;
 using PromptManager.Services;
 using PromptManager.ViewModels;
 
-var repository = new PromptRepository();
+var databasePath = CreateSmokeDatabasePath();
+var repository = new PromptRepository(databasePath);
 repository.Initialize();
 var viewModel = new MainViewModel(repository, new PromptFileService(repository));
 var suffix = DateTime.Now.ToString("yyyyMMddHHmmss");
@@ -36,6 +38,7 @@ try
     Assert(viewModel.SelectedPrompt!.FolderId == parentId, "Created prompt did not start in the parent folder.");
 
     viewModel.SelectedPrompt.FolderId = childId;
+    viewModel.ChangeNote = "Smoke test move to child folder.";
     viewModel.SaveCommand.Execute(null);
 
     var movedPrompt = repository.GetPromptById(promptId) ?? throw new InvalidOperationException("Moved prompt could not be loaded.");
@@ -46,6 +49,7 @@ try
     Assert(viewModel.SelectedPrompt!.FolderPath == childPath, "Selected prompt did not show the destination path after refresh.");
 
     viewModel.SelectedPrompt.FolderId = null;
+    viewModel.ChangeNote = "Smoke test move to Unfiled.";
     viewModel.SaveCommand.Execute(null);
 
     var unfiledPrompt = repository.GetPromptById(promptId) ?? throw new InvalidOperationException("Unfiled prompt could not be loaded.");
@@ -75,6 +79,8 @@ finally
     {
         repository.DeleteFolder(parentId);
     }
+
+    DeleteSmokeDatabase(databasePath);
 }
 
 static void RefreshFolders(MainViewModel viewModel, int? selectedFolderId, bool preserveCurrentSelection)
@@ -98,4 +104,38 @@ static void Assert(bool condition, string message)
         throw new InvalidOperationException(message);
     }
 }
+static string CreateSmokeDatabasePath()
+{
+    return Path.Combine(Path.GetTempPath(), "PromptManagerSmoke-" + Guid.NewGuid().ToString("N") + ".db");
+}
 
+static void DeleteSmokeDatabase(string databasePath)
+{
+    Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools();
+    GC.Collect();
+    GC.WaitForPendingFinalizers();
+
+    foreach (var path in new[] { databasePath, databasePath + "-shm", databasePath + "-wal" })
+    {
+        for (var attempt = 0; attempt < 5; attempt++)
+        {
+            try
+            {
+                if (File.Exists(path))
+                {
+                    File.Delete(path);
+                }
+
+                break;
+            }
+            catch (IOException) when (attempt < 4)
+            {
+                System.Threading.Thread.Sleep(100);
+            }
+            catch (UnauthorizedAccessException) when (attempt < 4)
+            {
+                System.Threading.Thread.Sleep(100);
+            }
+        }
+    }
+}

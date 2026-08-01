@@ -1,8 +1,8 @@
-﻿# Prompt Manager User Manual
+# Prompt Manager User Manual
 
 **Application:** Prompt Manager  
 **Document Type:** User Manual and Technical Reference  
-**Version:** 1.2  
+**Version:** 1.3  
 **Platform:** Windows 11 desktop  
 **Storage Model:** Local/offline SQLite database  
 **Prepared For:** Prompt library users, validation document authors, controlled document owners, and local application administrators
@@ -30,6 +30,7 @@
 | 1.0 | 2026-05-07 | Initial user manual for Prompt Manager |
 | 1.1 | 2026-06-18 | Added custom prompt Type values and formatted Notes support |
 | 1.2 | 2026-06-18 | Added modes, labels, variables, review checks, duplicate warnings, version comparison, and required change notes |
+| 1.3 | 2026-08-01 | Added tabbed properties panel, .NET 10 target, safer restore, fuller version metadata, safer installer manifest handling, and isolated smoke checks |
 
 ---
 
@@ -53,7 +54,7 @@ Use Prompt Manager to:
 - Mark prompts as draft, in review, approved, or retired.
 - Search prompt type, mode, labels, titles, tags, notes, and prompt text.
 - Copy approved or reusable prompt text to the Windows clipboard.
-- Track prompt versions when prompt text changes.
+- Track prompt versions when controlled prompt fields change.
 - Archive retired prompts without permanently deleting them.
 - Import and export prompt libraries as JSON files.
 - Back up and restore the local SQLite database.
@@ -81,7 +82,7 @@ Prompt Manager is designed as a local desktop tool.
 - Stores prompt data in a local SQLite database.
 - Opens local Windows file dialogs for import, export, backup, and restore.
 - Copies selected prompt text to the Windows clipboard.
-- Saves prompt version records when prompt text changes.
+- Saves prompt version records when controlled prompt fields change.
 - Creates a local full-text search index when SQLite FTS5 is available.
 
 ### 2.2 What the Application Does Not Do
@@ -104,7 +105,7 @@ Prompt Manager does not:
 
 The database is local to the Windows user profile. Anyone with access to the Windows account and the database file may be able to read the prompt data. Use Windows account controls, normal workstation security, and local backup discipline as appropriate for your environment.
 
-Prompt Manager records versions of prompt body text when saved, but it is not a complete audit trail system. It does not currently capture user identity, electronic signatures, reason-for-change prompts, or approval signatures.
+Prompt Manager records versions of controlled prompt fields when saved, but it is not a complete audit trail system. It does not currently capture user identity, electronic signatures, reason-for-change prompts, or approval signatures.
 
 ---
 
@@ -115,8 +116,8 @@ Prompt Manager records versions of prompt body text when saved, but it is not a 
 | Requirement | Value |
 | --- | --- |
 | Operating System | Windows 11 recommended |
-| Runtime | .NET 8 Windows Desktop Runtime |
-| Build SDK | .NET SDK 8.0 if building from source |
+| Runtime | Installed package is self-contained; .NET 10 Windows Desktop Runtime for development builds |
+| Build SDK | .NET SDK 10.0 if building from source |
 | Database | SQLite local database |
 | Disk Access | User write access to `%LOCALAPPDATA%` |
 
@@ -125,7 +126,7 @@ Prompt Manager records versions of prompt body text when saved, but it is not a 
 If running from the development build, launch:
 
 ```text
-src\PromptManager\bin\Debug\net8.0-windows\PromptManager.exe
+src\PromptManager\bin\Debug\net10.0-windows\PromptManager.exe
 ```
 
 If running from Visual Studio, open:
@@ -249,7 +250,7 @@ Double-clicking a prompt copies its prompt text to the Windows clipboard.
 
 ### 4.5 Properties Panel
 
-The right pane displays editable properties for the selected prompt.
+The right pane displays editable properties for the selected prompt in tabs: Details, Notes, Prompt, Review, and Versions.
 
 | Field or Control | Purpose |
 | --- | --- |
@@ -265,7 +266,7 @@ The right pane displays editable properties for the selected prompt.
 | Prompt Text | Editable reusable prompt body |
 | Variables | Lists `{{VariableName}}` placeholders detected in Prompt Text |
 | Review Checks | Shows quality checks and duplicate title/body warnings |
-| Version Control | Shows version comparison and captures required change notes for body changes |
+| Version Control | Shows version comparison and captures required change notes for controlled record changes |
 | Save | Saves changes |
 | Copy | Copies prompt text to clipboard |
 | Favorite | Toggles favorite flag |
@@ -605,7 +606,7 @@ Suggested usage:
 
 ### 7.4 Version Discipline
 
-Prompt Manager creates a version record when prompt body text changes and the prompt is saved. For controlled prompt libraries:
+Prompt Manager creates a version record when controlled prompt fields change and the prompt is saved. For controlled prompt libraries:
 
 - Keep titles stable and descriptive.
 - Use Type, Tags, and Notes to describe intended usage and make records easier to retrieve.
@@ -672,7 +673,7 @@ src
   PromptManager
     bin
       Debug
-        net8.0-windows
+        net10.0-windows
           PromptManager.exe
           PromptManager.dll
           PromptManager.deps.json
@@ -729,7 +730,7 @@ Top-level structure:
 ```json
 {
   "Format": "PromptManager.Export",
-  "FormatVersion": "1.2",
+  "FormatVersion": "1.3",
   "ExportedAt": "2026-05-07T18:15:00.0000000-04:00",
   "Folders": [],
   "Prompts": []
@@ -775,7 +776,16 @@ Version entry:
 ```json
 {
   "VersionNumber": 1,
+  "FolderId": 2,
+  "Title": "CSV Protocol Builder",
+  "Type": "Prompt",
+  "Mode": "Text",
+  "Labels": "Training; Approved",
   "Body": "Create a validation protocol outline...",
+  "Status": "Draft",
+  "Tags": "CSV; protocol; validation",
+  "Notes": "",
+  "FormattedNotes": "",
   "ChangeNote": "Initial draft",
   "CreatedAt": "2026-05-07T18:15:00.0000000-04:00"
 }
@@ -891,8 +901,17 @@ Prompt Manager seeds `Production`, `Approved`, `Training`, and `Deprecated`. Whe
 | --- | --- | --- | --- |
 | Id | INTEGER | No | Primary key, auto-increment |
 | PromptId | INTEGER | No | Prompt ID; references `Prompts.Id` |
-| VersionNumber | INTEGER | No | Sequential body version number |
+| VersionNumber | INTEGER | No | Sequential controlled-record version number |
+| FolderId | INTEGER | Yes | Folder at the time of the saved version |
+| Type | TEXT | No | Prompt type captured for this version |
+| Mode | TEXT | No | Prompt mode captured for this version |
+| Labels | TEXT | No | Labels captured for this version |
+| Title | TEXT | No | Prompt title captured for this version |
 | Body | TEXT | No | Prompt body captured for this version |
+| Status | TEXT | No | Lifecycle status captured for this version |
+| Tags | TEXT | No | Tags captured for this version |
+| Notes | TEXT | No | Plain-text notes captured for this version |
+| FormattedNotes | TEXT | No | RTF notes captured for this version |
 | ChangeNote | TEXT | No | Version note such as `Initial draft` or `Saved update` |
 | CreatedAt | TEXT | No | ISO 8601 date/time |
 
@@ -965,7 +984,7 @@ The JSON export format maps to application DTO classes.
 | Property | Type | Description |
 | --- | --- | --- |
 | Format | string | Must be `PromptManager.Export` |
-| FormatVersion | string | Export format version, currently `1.2` |
+| FormatVersion | string | Export format version, currently `1.3` |
 | ExportedAt | DateTime | Export creation date/time |
 | Folders | List of FolderExportDto | Exported folders |
 | Prompts | List of PromptExportDto | Exported prompts |
@@ -1005,7 +1024,16 @@ The JSON export format maps to application DTO classes.
 | Property | Type | Description |
 | --- | --- | --- |
 | VersionNumber | int | Version sequence number |
-| Body | string | Body text for that version |
+| FolderId | nullable int | Folder ID captured for that version |
+| Title | string | Title captured for that version |
+| Type | string | Type captured for that version |
+| Mode | string | Mode captured for that version |
+| Labels | string | Labels captured for that version |
+| Body | string | Body text captured for that version |
+| Status | string | Lifecycle status captured for that version |
+| Tags | string | Tags captured for that version |
+| Notes | string | Plain-text notes captured for that version |
+| FormattedNotes | string | RTF notes captured for that version |
 | ChangeNote | string | Version note |
 | CreatedAt | DateTime | Version creation date/time |
 
@@ -1017,7 +1045,7 @@ The JSON export format maps to application DTO classes.
 
 Check:
 
-- .NET 8 Windows Desktop Runtime is installed.
+- .NET 10 Windows Desktop Runtime is installed for development builds, or use the self-contained installer package.
 - `PromptManager.exe` exists in the build output folder.
 - The Windows user has permission to write to `%LOCALAPPDATA%`.
 

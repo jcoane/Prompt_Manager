@@ -1,4 +1,4 @@
-﻿using System.Globalization;
+using System.Globalization;
 using System.IO;
 using System.Text.RegularExpressions;
 using Microsoft.Data.Sqlite;
@@ -10,8 +10,14 @@ public sealed class PromptRepository
 {
     private bool _isFtsAvailable;
 
-    public PromptRepository()
+    public PromptRepository(string? databasePath = null)
     {
+        if (!string.IsNullOrWhiteSpace(databasePath))
+        {
+            DatabasePath = databasePath;
+            return;
+        }
+
         var appData = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
         DatabasePath = Path.Combine(appData, "PromptManager", "prompt-manager.db");
     }
@@ -234,6 +240,15 @@ public sealed class PromptRepository
         return command.ExecuteScalar() as string ?? "";
     }
 
+    public bool HasControlledRecordChanges(PromptRow prompt)
+    {
+        using var connection = OpenConnection();
+        var promptType = NormalizePromptType(prompt.Type);
+        var promptMode = NormalizePromptMode(prompt.Mode);
+        var labels = NormalizeLabels(prompt.Labels);
+        return HasControlledRecordChanges(connection, null, prompt, promptType, promptMode, labels);
+    }
+
     public IReadOnlyList<string> GetDuplicateWarnings(int promptId, string title, string body)
     {
         using var connection = OpenConnection();
@@ -337,7 +352,7 @@ public sealed class PromptRepository
         command.Parameters.AddWithValue("$updatedAt", ToDatabaseDate(now));
 
         var promptId = Convert.ToInt32(command.ExecuteScalar(), CultureInfo.InvariantCulture);
-        InsertPromptVersion(connection, transaction, promptId, 1, body, "Initial draft", now);
+        InsertPromptVersion(connection, transaction, promptId, 1, folderId, "Untitled Prompt", "Prompt", "Text", "", body, "Draft", "", "", "", "Initial draft", now);
         transaction.Commit();
         return promptId;
     }
@@ -360,24 +375,8 @@ public sealed class PromptRepository
         var labels = NormalizeLabels(prompt.Labels);
         EnsurePromptLabels(connection, transaction, labels);
 
-        var currentBody = "";
-        var currentVersion = 0;
-        using (var readCommand = connection.CreateCommand())
-        {
-            readCommand.Transaction = transaction;
-            readCommand.CommandText =
-                "SELECT p.Body, COALESCE(MAX(v.VersionNumber), 0) " +
-                "FROM Prompts p LEFT JOIN PromptVersions v ON v.PromptId = p.Id " +
-                "WHERE p.Id = $id GROUP BY p.Id;";
-            readCommand.Parameters.AddWithValue("$id", prompt.Id);
-
-            using var reader = readCommand.ExecuteReader();
-            if (reader.Read())
-            {
-                currentBody = reader.IsDBNull(0) ? "" : reader.GetString(0);
-                currentVersion = reader.GetInt32(1);
-            }
-        }
+        var recordChanged = HasControlledRecordChanges(connection, transaction, prompt, promptType, promptMode, labels);
+        var currentVersion = GetCurrentVersion(connection, transaction, prompt.Id);
 
         using (var updateCommand = connection.CreateCommand())
         {
@@ -402,9 +401,9 @@ public sealed class PromptRepository
             updateCommand.ExecuteNonQuery();
         }
 
-        if (!string.Equals(currentBody, prompt.Body, StringComparison.Ordinal))
+        if (recordChanged)
         {
-            InsertPromptVersion(connection, transaction, prompt.Id, currentVersion + 1, prompt.Body, normalizedChangeNote, now);
+            InsertPromptVersion(connection, transaction, prompt.Id, currentVersion + 1, prompt.FolderId, prompt.Title.Trim(), promptType, promptMode, labels, prompt.Body, prompt.Status.ToString(), prompt.Tags.Trim(), prompt.Notes.Trim(), prompt.FormattedNotes, normalizedChangeNote, now);
         }
 
         transaction.Commit();
@@ -552,12 +551,12 @@ public sealed class PromptRepository
 
             var newPromptId = InsertImportedPrompt(connection, transaction, prompt, mappedFolderId);
             IEnumerable<PromptVersionExportDto> versions = prompt.Versions.Count == 0
-                ? new[] { new PromptVersionExportDto { VersionNumber = 1, Body = prompt.Body, ChangeNote = "Imported", CreatedAt = DateTime.Now } }
+                ? new[] { new PromptVersionExportDto { VersionNumber = 1, FolderId = mappedFolderId, Title = prompt.Title, Type = prompt.Type, Mode = prompt.Mode, Labels = prompt.Labels, Body = prompt.Body, Status = prompt.Status.ToString(), Tags = prompt.Tags, Notes = prompt.Notes, FormattedNotes = prompt.FormattedNotes, ChangeNote = "Imported", CreatedAt = DateTime.Now } }
                 : prompt.Versions.OrderBy(version => version.VersionNumber);
 
             foreach (var version in versions)
             {
-                InsertPromptVersion(connection, transaction, newPromptId, version.VersionNumber, version.Body, version.ChangeNote, version.CreatedAt);
+                InsertPromptVersion(connection, transaction, newPromptId, version.VersionNumber, version.FolderId ?? mappedFolderId, string.IsNullOrWhiteSpace(version.Title) ? prompt.Title : version.Title, string.IsNullOrWhiteSpace(version.Type) ? prompt.Type : version.Type, string.IsNullOrWhiteSpace(version.Mode) ? prompt.Mode : version.Mode, string.IsNullOrWhiteSpace(version.Labels) ? prompt.Labels : version.Labels, version.Body, string.IsNullOrWhiteSpace(version.Status) ? prompt.Status.ToString() : version.Status, string.IsNullOrWhiteSpace(version.Tags) ? prompt.Tags : version.Tags, string.IsNullOrWhiteSpace(version.Notes) ? prompt.Notes : version.Notes, string.IsNullOrWhiteSpace(version.FormattedNotes) ? prompt.FormattedNotes : version.FormattedNotes, version.ChangeNote, version.CreatedAt);
             }
 
             imported++;
@@ -573,11 +572,54 @@ public sealed class PromptRepository
         File.Copy(DatabasePath, destinationPath, true);
     }
 
-    public void RestoreFrom(string sourcePath)
+    public string? RestoreFrom(string sourcePath)
     {
+        ValidateBackupDatabase(sourcePath);
         Directory.CreateDirectory(Path.GetDirectoryName(DatabasePath)!);
+
+        string? safetyBackupPath = null;
+        if (File.Exists(DatabasePath))
+        {
+            safetyBackupPath = Path.Combine(
+                Path.GetDirectoryName(DatabasePath)!,
+                "pre-restore-backup-" + DateTime.Now.ToString("yyyyMMdd-HHmmss", CultureInfo.InvariantCulture) + ".db");
+            File.Copy(DatabasePath, safetyBackupPath, true);
+        }
+
         File.Copy(sourcePath, DatabasePath, true);
         Initialize();
+        return safetyBackupPath;
+    }
+
+    public static void ValidateBackupDatabase(string sourcePath)
+    {
+        if (!File.Exists(sourcePath))
+        {
+            throw new FileNotFoundException("The selected backup file was not found.", sourcePath);
+        }
+
+        using var connection = new SqliteConnection(new SqliteConnectionStringBuilder { DataSource = sourcePath, Mode = SqliteOpenMode.ReadOnly }.ToString());
+        connection.Open();
+
+        using (var command = connection.CreateCommand())
+        {
+            command.CommandText = "PRAGMA integrity_check;";
+            var result = command.ExecuteScalar() as string;
+            if (!string.Equals(result, "ok", StringComparison.OrdinalIgnoreCase))
+            {
+                throw new InvalidOperationException("The selected backup failed SQLite integrity_check: " + result);
+            }
+        }
+
+        using (var command = connection.CreateCommand())
+        {
+            command.CommandText = "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name IN ('Prompts', 'Folders', 'PromptVersions');";
+            var requiredTables = Convert.ToInt32(command.ExecuteScalar(), CultureInfo.InvariantCulture);
+            if (requiredTables < 3)
+            {
+                throw new InvalidOperationException("The selected database is not a complete Prompt Manager backup.");
+            }
+        }
     }
 
     private SqliteConnection OpenConnection()
@@ -637,6 +679,15 @@ public sealed class PromptRepository
                 VersionNumber INTEGER NOT NULL,
                 Body TEXT NOT NULL,
                 ChangeNote TEXT NOT NULL DEFAULT '',
+                FolderId INTEGER NULL,
+                Type TEXT NOT NULL DEFAULT 'Prompt',
+                Mode TEXT NOT NULL DEFAULT 'Text',
+                Labels TEXT NOT NULL DEFAULT '',
+                Title TEXT NOT NULL DEFAULT '',
+                Status TEXT NOT NULL DEFAULT 'Draft',
+                Tags TEXT NOT NULL DEFAULT '',
+                Notes TEXT NOT NULL DEFAULT '',
+                FormattedNotes TEXT NOT NULL DEFAULT '',
                 CreatedAt TEXT NOT NULL
             );
 
@@ -659,6 +710,15 @@ public sealed class PromptRepository
         ExecuteNonQuery(connection, "CREATE INDEX IF NOT EXISTS IX_Prompts_Type ON Prompts (Type);");
         ExecuteNonQuery(connection, "CREATE INDEX IF NOT EXISTS IX_Prompts_Mode ON Prompts (Mode);");
         ExecuteNonQuery(connection, "CREATE INDEX IF NOT EXISTS IX_Prompts_Labels ON Prompts (Labels);");
+        AddColumnIfMissing(connection, "PromptVersions", "FolderId", "INTEGER NULL");
+        AddColumnIfMissing(connection, "PromptVersions", "Type", "TEXT NOT NULL DEFAULT 'Prompt'");
+        AddColumnIfMissing(connection, "PromptVersions", "Mode", "TEXT NOT NULL DEFAULT 'Text'");
+        AddColumnIfMissing(connection, "PromptVersions", "Labels", "TEXT NOT NULL DEFAULT ''");
+        AddColumnIfMissing(connection, "PromptVersions", "Title", "TEXT NOT NULL DEFAULT ''");
+        AddColumnIfMissing(connection, "PromptVersions", "Status", "TEXT NOT NULL DEFAULT 'Draft'");
+        AddColumnIfMissing(connection, "PromptVersions", "Tags", "TEXT NOT NULL DEFAULT ''");
+        AddColumnIfMissing(connection, "PromptVersions", "Notes", "TEXT NOT NULL DEFAULT ''");
+        AddColumnIfMissing(connection, "PromptVersions", "FormattedNotes", "TEXT NOT NULL DEFAULT ''");
     }
 
     private static void AddColumnIfMissing(SqliteConnection connection, string tableName, string columnName, string definition)
@@ -819,7 +879,7 @@ public sealed class PromptRepository
         command.Parameters.AddWithValue("$createdAt", ToDatabaseDate(now));
         command.Parameters.AddWithValue("$updatedAt", ToDatabaseDate(now));
         var promptId = Convert.ToInt32(command.ExecuteScalar(), CultureInfo.InvariantCulture);
-        InsertPromptVersion(connection, null, promptId, 1, body, "Seed prompt", now);
+        InsertPromptVersion(connection, null, promptId, 1, folderId, title, "Prompt", "Text", "", body, status.ToString(), tags, "", "", "Seed prompt", now);
     }
 
     private static IReadOnlyList<PromptRow> ReadPrompts(SqliteCommand command, IReadOnlyDictionary<int, string> folderPaths)
@@ -992,7 +1052,7 @@ public sealed class PromptRepository
     private static IReadOnlyList<PromptVersionExportDto> GetPromptVersions(SqliteConnection connection, int promptId)
     {
         using var command = connection.CreateCommand();
-        command.CommandText = "SELECT VersionNumber, Body, ChangeNote, CreatedAt FROM PromptVersions WHERE PromptId = $promptId ORDER BY VersionNumber;";
+        command.CommandText = "SELECT VersionNumber, Body, ChangeNote, CreatedAt, FolderId, Type, Mode, Labels, Title, Status, Tags, Notes, FormattedNotes FROM PromptVersions WHERE PromptId = $promptId ORDER BY VersionNumber;";
         command.Parameters.AddWithValue("$promptId", promptId);
 
         var versions = new List<PromptVersionExportDto>();
@@ -1004,7 +1064,16 @@ public sealed class PromptRepository
                 VersionNumber = reader.GetInt32(0),
                 Body = reader.GetString(1),
                 ChangeNote = reader.GetString(2),
-                CreatedAt = FromDatabaseDate(reader.GetString(3)) ?? DateTime.Now
+                CreatedAt = FromDatabaseDate(reader.GetString(3)) ?? DateTime.Now,
+                FolderId = reader.IsDBNull(4) ? null : reader.GetInt32(4),
+                Type = reader.GetString(5),
+                Mode = reader.GetString(6),
+                Labels = reader.GetString(7),
+                Title = reader.GetString(8),
+                Status = reader.GetString(9),
+                Tags = reader.GetString(10),
+                Notes = reader.GetString(11),
+                FormattedNotes = reader.GetString(12)
             });
         }
 
@@ -1075,17 +1144,71 @@ public sealed class PromptRepository
 
     private static void InsertPromptVersion(SqliteConnection connection, SqliteTransaction? transaction, int promptId, int versionNumber, string body, string changeNote, DateTime createdAt)
     {
+        InsertPromptVersion(connection, transaction, promptId, versionNumber, null, "", "Prompt", "Text", "", body, "Draft", "", "", "", changeNote, createdAt);
+    }
+
+    private static void InsertPromptVersion(SqliteConnection connection, SqliteTransaction? transaction, int promptId, int versionNumber, int? folderId, string title, string type, string mode, string labels, string body, string status, string tags, string notes, string formattedNotes, string changeNote, DateTime createdAt)
+    {
         using var command = connection.CreateCommand();
         command.Transaction = transaction;
         command.CommandText =
-            "INSERT INTO PromptVersions (PromptId, VersionNumber, Body, ChangeNote, CreatedAt) " +
-            "VALUES ($promptId, $versionNumber, $body, $changeNote, $createdAt);";
+            "INSERT INTO PromptVersions (PromptId, VersionNumber, FolderId, Type, Mode, Labels, Title, Body, Status, Tags, Notes, FormattedNotes, ChangeNote, CreatedAt) " +
+            "VALUES ($promptId, $versionNumber, $folderId, $type, $mode, $labels, $title, $body, $status, $tags, $notes, $formattedNotes, $changeNote, $createdAt);";
         command.Parameters.AddWithValue("$promptId", promptId);
         command.Parameters.AddWithValue("$versionNumber", versionNumber);
+        command.Parameters.AddWithValue("$folderId", folderId.HasValue ? folderId.Value : DBNull.Value);
+        command.Parameters.AddWithValue("$type", NormalizePromptType(type));
+        command.Parameters.AddWithValue("$mode", NormalizePromptMode(mode));
+        command.Parameters.AddWithValue("$labels", NormalizeLabels(labels));
+        command.Parameters.AddWithValue("$title", title.Trim());
         command.Parameters.AddWithValue("$body", body);
+        command.Parameters.AddWithValue("$status", status);
+        command.Parameters.AddWithValue("$tags", tags.Trim());
+        command.Parameters.AddWithValue("$notes", notes.Trim());
+        command.Parameters.AddWithValue("$formattedNotes", formattedNotes);
         command.Parameters.AddWithValue("$changeNote", changeNote);
         command.Parameters.AddWithValue("$createdAt", ToDatabaseDate(createdAt));
         command.ExecuteNonQuery();
+    }
+
+    private static int GetCurrentVersion(SqliteConnection connection, SqliteTransaction? transaction, int promptId)
+    {
+        using var command = connection.CreateCommand();
+        command.Transaction = transaction;
+        command.CommandText = "SELECT COALESCE(MAX(VersionNumber), 0) FROM PromptVersions WHERE PromptId = $id;";
+        command.Parameters.AddWithValue("$id", promptId);
+        return Convert.ToInt32(command.ExecuteScalar(), CultureInfo.InvariantCulture);
+    }
+
+    private static bool HasControlledRecordChanges(SqliteConnection connection, SqliteTransaction? transaction, PromptRow prompt, string promptType, string promptMode, string labels)
+    {
+        using var command = connection.CreateCommand();
+        command.Transaction = transaction;
+        command.CommandText = "SELECT FolderId, Type, Mode, Labels, Title, Body, Status, Tags, Notes, FormattedNotes FROM Prompts WHERE Id = $id;";
+        command.Parameters.AddWithValue("$id", prompt.Id);
+
+        using var reader = command.ExecuteReader();
+        if (!reader.Read())
+        {
+            return true;
+        }
+
+        int? folderId = reader.IsDBNull(0) ? null : reader.GetInt32(0);
+        return folderId != prompt.FolderId
+            || !Same(reader.GetString(1), promptType)
+            || !Same(reader.GetString(2), promptMode)
+            || !Same(reader.GetString(3), labels)
+            || !Same(reader.GetString(4), prompt.Title.Trim())
+            || !Same(reader.GetString(5), prompt.Body)
+            || !Same(reader.GetString(6), prompt.Status.ToString())
+            || !Same(reader.GetString(7), prompt.Tags.Trim())
+            || !Same(reader.GetString(8), prompt.Notes.Trim())
+            || !Same(reader.GetString(9), prompt.FormattedNotes);
+    }
+
+    private static bool Same(string left, string right)
+    {
+        return string.Equals(left, right, StringComparison.Ordinal);
     }
 
     private static IReadOnlyList<string> FindPromptTitles(SqliteConnection connection, int promptId, string predicate, string value)
@@ -1217,5 +1340,8 @@ public sealed class PromptRepository
             : null;
     }
 }
+
+
+
 
 
