@@ -6,10 +6,12 @@
         xmlns:models="clr-namespace:PromptManager.Models"
         mc:Ignorable="d"
         Title="Prompt Manager"
+        Icon="pack://application:,,,/PromptManager;component/Assets/PromptManager.ico"
         Width="1480"
         Height="880"
-        MinWidth="1180"
-        MinHeight="680"
+        MinWidth="1000"
+        MinHeight="620"
+        PreviewKeyDown="Window_PreviewKeyDown"
         WindowStartupLocation="CenterScreen"
         Background="{StaticResource CenterBrush}">
     <Window.Resources>
@@ -27,8 +29,23 @@
         </Grid.RowDefinitions>
 
         <Menu Grid.Row="0" Background="{StaticResource ShellTopBrush}" Foreground="{StaticResource InkBrush}">
+            <MenuItem Header="_File">
+                <MenuItem Header="_New Prompt" Command="{Binding NewPromptCommand}" InputGestureText="Ctrl+N" />
+                <Separator />
+                <MenuItem Header="_Import" Command="{Binding ImportCommand}" />
+                <MenuItem Header="_Export">
+                    <MenuItem Header="Selected Prompts" Command="{Binding ExportCommand}" IsEnabled="{Binding HasSelection}" />
+                    <MenuItem Header="Current View" Command="{Binding ExportViewCommand}" />
+                    <MenuItem Header="Entire Library" Command="{Binding ExportLibraryCommand}" />
+                </MenuItem>
+                <Separator />
+                <MenuItem Header="_Backup Library" Command="{Binding BackupCommand}" />
+                <MenuItem Header="_Restore Library" Command="{Binding RestoreCommand}" />
+            </MenuItem>
+            <MenuItem x:Name="ColumnsMenu" Header="_Columns" />
             <MenuItem Header="_Help">
                 <MenuItem Header="_User Manual" Click="UserManualMenuItem_Click" />
+                <MenuItem Header="Recovery Records" Click="RecoveryRecords_Click" />
                 <Separator />
                 <MenuItem Header="_About" Click="AboutMenuItem_Click" />
             </MenuItem>
@@ -36,18 +53,13 @@
         <Border Grid.Row="1" Background="{StaticResource ShellTopBrush}" BorderBrush="{StaticResource ShellTopDarkBrush}" BorderThickness="0,0,0,1">
             <DockPanel LastChildFill="True" Margin="12,10">
                 <StackPanel DockPanel.Dock="Right" Orientation="Horizontal">
-                    <Button Content="New Folder" Click="NewFolderButton_Click" Style="{StaticResource TopButtonStyle}" />
-                    <Button Content="Delete Folder" Click="DeleteFolderButton_Click" IsEnabled="{Binding HasSelectedFolder}" Style="{StaticResource TopButtonStyle}" />
                     <Button Content="New Prompt" Command="{Binding NewPromptCommand}" Style="{StaticResource TopButtonStyle}" />
-                    <Button Content="Import" Command="{Binding ImportCommand}" Style="{StaticResource TopButtonStyle}" />
-                    <Button Content="Export" Command="{Binding ExportCommand}" Style="{StaticResource TopButtonStyle}" />
-                    <Button Content="Backup" Command="{Binding BackupCommand}" Style="{StaticResource TopButtonStyle}" />
-                    <Button Content="Restore" Command="{Binding RestoreCommand}" Style="{StaticResource TopButtonStyle}" />
-                    <Button Content="Clear Search" Command="{Binding ClearSearchCommand}" Style="{StaticResource TopButtonStyle}" />
+                    <Button Content="&#xE711;" Command="{Binding ClearSearchCommand}" Style="{StaticResource IconButtonStyle}" ToolTip="Clear search" />
+                    <Button Content="&#xE72C;" Command="{Binding RefreshCommand}" Style="{StaticResource IconButtonStyle}" ToolTip="Refresh library" />
                 </StackPanel>
 
-                <Grid DockPanel.Dock="Left" Width="430">
-                    <TextBox Text="{Binding SearchText, UpdateSourceTrigger=PropertyChanged}"
+                <Grid MinWidth="240" Margin="0,0,12,0">
+                    <TextBox x:Name="SearchBox" Text="{Binding SearchText, UpdateSourceTrigger=PropertyChanged, Delay=350}"
                              VerticalContentAlignment="Center"
                              ToolTip="Search type, mode, labels, titles, tags, notes, and prompt text" />
                     <TextBlock Text="Search prompts"
@@ -75,11 +87,11 @@
 
         <Grid Grid.Row="2">
             <Grid.ColumnDefinitions>
-                <ColumnDefinition Width="260" MinWidth="220" />
+                <ColumnDefinition x:Name="NavigationColumn" Width="220" MinWidth="180" />
                 <ColumnDefinition Width="5" />
-                <ColumnDefinition Width="*" MinWidth="520" />
+                <ColumnDefinition Width="*" MinWidth="350" />
                 <ColumnDefinition Width="5" />
-                <ColumnDefinition Width="470" MinWidth="410" />
+                <ColumnDefinition x:Name="EditorColumn" Width="500" MinWidth="350" />
             </Grid.ColumnDefinitions>
 
             <Border Grid.Column="0" Background="{StaticResource NavBrush}" BorderBrush="{StaticResource LineBrush}" BorderThickness="0,0,1,0">
@@ -111,7 +123,13 @@
                         </ListBox>
                     </StackPanel>
 
-                    <TextBlock DockPanel.Dock="Top" Text="Directory Tree" FontWeight="SemiBold" Foreground="{StaticResource MutedInkBrush}" Margin="0,0,0,4" />
+                    <TextBlock DockPanel.Dock="Top" Text="Directories" FontWeight="SemiBold" Foreground="{StaticResource MutedInkBrush}" Margin="0,0,0,4" />
+                    <StackPanel DockPanel.Dock="Top" Orientation="Horizontal" Margin="0,0,0,6">
+                        <Button Content="&#xE8F4;" Command="{Binding NewFolderCommand}" Style="{StaticResource IconButtonStyle}" ToolTip="New folder" />
+                        <Button Content="&#xE8AC;" Command="{Binding RenameFolderCommand}" Style="{StaticResource IconButtonStyle}" ToolTip="Rename folder" />
+                        <Button Content="&#xE8DE;" Command="{Binding MoveFolderCommand}" Style="{StaticResource IconButtonStyle}" ToolTip="Move folder" />
+                        <Button Content="&#xE74D;" Command="{Binding DeleteFolderCommand}" Style="{StaticResource IconButtonStyle}" ToolTip="Delete folder (prompts move to Unfiled)" />
+                    </StackPanel>
                     <TreeView ItemsSource="{Binding FolderTree}"
                               SelectedItemChanged="FolderTree_SelectedItemChanged"
                               Background="Transparent"
@@ -137,26 +155,29 @@
                     </Grid.RowDefinitions>
 
                     <DockPanel Grid.Row="0" Margin="0,0,0,10">
+                        <Button Content="&#xE8DE;" DockPanel.Dock="Right" Command="{Binding MoveSelectedCommand}" Style="{StaticResource IconButtonStyle}" ToolTip="Move selected prompts" />
                         <TextBlock Text="{Binding RegisterTitle}" FontSize="18" FontWeight="SemiBold" />
                         <TextBlock Text="{Binding ResultSummary}" Foreground="{StaticResource MutedInkBrush}" Margin="12,4,0,0" />
                     </DockPanel>
 
-                    <DataGrid Grid.Row="1"
+                    <DataGrid x:Name="PromptGrid" Grid.Row="1"
                               ItemsSource="{Binding Prompts}"
                               SelectedItem="{Binding SelectedPrompt}"
                               IsReadOnly="True"
+                              SelectionMode="Extended"
+                              SelectionChanged="PromptGrid_SelectionChanged"
                               MouseDoubleClick="PromptGrid_MouseDoubleClick">
                         <DataGrid.Columns>
-                            <DataGridTextColumn Header="Type" Binding="{Binding Type}" Width="95" />
-                            <DataGridTextColumn Header="Mode" Binding="{Binding Mode}" Width="110" />
                             <DataGridTextColumn Header="Name" Binding="{Binding Title}" Width="2*" MinWidth="180" />
-                            <DataGridTextColumn Header="Status" Binding="{Binding Status}" Width="110" />
-                            <DataGridTextColumn Header="Labels" Binding="{Binding Labels}" Width="1.1*" MinWidth="120" />
-                            <DataGridTextColumn Header="Tags" Binding="{Binding Tags}" Width="1.5*" MinWidth="140" />
-                            <DataGridTextColumn Header="Path" Binding="{Binding FolderPath}" Width="1.5*" MinWidth="150" />
-                            <DataGridTextColumn Header="Version" Binding="{Binding VersionLabel}" Width="86" />
-                            <DataGridCheckBoxColumn Header="Favorite" Binding="{Binding IsFavorite}" Width="90" />
+                            <DataGridTextColumn Header="Status" Binding="{Binding Status}" Width="90" />
+                            <DataGridTextColumn Header="Type" Binding="{Binding Type}" Width="95" />
+                            <DataGridTextColumn Header="Tags" Binding="{Binding Tags}" Width="130" />
+                            <DataGridTextColumn Header="Version" Binding="{Binding VersionLabel}" SortMemberPath="Version" Width="70" />
                             <DataGridTextColumn Header="Modified" Binding="{Binding UpdatedAt, StringFormat={}{0:g}}" Width="140" />
+                            <DataGridTextColumn Header="Mode" Binding="{Binding Mode}" Width="110" Visibility="Collapsed" />
+                            <DataGridTextColumn Header="Labels" Binding="{Binding Labels}" Width="120" Visibility="Collapsed" />
+                            <DataGridTextColumn Header="Path" Binding="{Binding FolderPath}" Width="150" Visibility="Collapsed" />
+                            <DataGridCheckBoxColumn Header="Favorite" Binding="{Binding IsFavorite}" Width="80" Visibility="Collapsed" />
                         </DataGrid.Columns>
                     </DataGrid>
                 </Grid>
@@ -174,17 +195,15 @@
                         <RowDefinition Height="Auto" />
                     </Grid.RowDefinitions>
 
-                    <TextBlock Grid.Row="0" Text="Properties" FontSize="18" FontWeight="SemiBold" Margin="0,0,0,12" />
+                    <DockPanel Grid.Row="0" Margin="0,0,0,8">
+                        <TextBlock Text="Unsaved" DockPanel.Dock="Right" Foreground="#884B58" FontWeight="SemiBold" VerticalAlignment="Center">
+                            <TextBlock.Style><Style TargetType="TextBlock"><Setter Property="Visibility" Value="Collapsed" /><Style.Triggers><DataTrigger Binding="{Binding HasUnsavedChanges}" Value="True"><Setter Property="Visibility" Value="Visible" /></DataTrigger></Style.Triggers></Style></TextBlock.Style>
+                        </TextBlock>
+                        <TextBlock Text="Properties" FontSize="18" FontWeight="SemiBold" />
+                    </DockPanel>
+                    <TextBlock Grid.Row="1" Text="{Binding SelectedPrompt.Title, TargetNullValue='No prompt selected'}" TextTrimming="CharacterEllipsis" ToolTip="{Binding SelectedPrompt.FolderPath}" FontWeight="SemiBold" Margin="0,0,0,8" />
 
-                    <Border Grid.Row="1" Background="{StaticResource PanelInsetBrush}" BorderBrush="{StaticResource LineBrush}" BorderThickness="1" Padding="12" Margin="0,0,0,12">
-                        <StackPanel>
-                            <TextBlock Text="Selected Item" FontWeight="SemiBold" Margin="0,0,0,8" />
-                            <TextBlock Text="{Binding SelectedPrompt.Title, TargetNullValue='No prompt selected'}" TextWrapping="Wrap" FontSize="16" />
-                            <TextBlock Text="{Binding SelectedPrompt.FolderPath}" Foreground="{StaticResource MutedInkBrush}" TextWrapping="Wrap" Margin="0,4,0,0" />
-                        </StackPanel>
-                    </Border>
-
-                    <TabControl Grid.Row="2" Margin="0,0,0,12">
+                    <TabControl x:Name="EditorTabs" Grid.Row="2" Margin="0,0,0,10">
                         <TabItem Header="Details">
                             <ScrollViewer VerticalScrollBarVisibility="Auto">
                                 <StackPanel Margin="12">
@@ -260,7 +279,12 @@
                                 </Grid.RowDefinitions>
 
                                 <Border Grid.Row="0" Background="#EEF6F2" BorderBrush="{StaticResource LineBrush}" BorderThickness="1,1,1,0" Padding="6,5">
-                                    <StackPanel Orientation="Horizontal">
+                                    <DockPanel>
+                                        <Button Content="&#xE740;" DockPanel.Dock="Right" Style="{StaticResource IconButtonStyle}" ToolTip="Expand Notes editor" Click="ExpandNotes_Click" IsEnabled="{Binding HasSelection}" />
+                                        <ComboBox x:Name="EditorFontSize" DockPanel.Dock="Right" Width="62" ToolTip="Reading size" SelectionChanged="EditorFontSize_SelectionChanged" Margin="6,0,6,0">
+                                            <ComboBoxItem Content="12" /><ComboBoxItem Content="14" /><ComboBoxItem Content="16" IsSelected="True" /><ComboBoxItem Content="18" /><ComboBoxItem Content="20" /><ComboBoxItem Content="24" />
+                                        </ComboBox>
+                                        <StackPanel Orientation="Horizontal">
                                         <Button x:Name="NotesBoldButton"
                                                 Content="B"
                                                 Width="30"
@@ -280,21 +304,23 @@
                                                 Click="NotesItalicButton_Click"
                                                 IsEnabled="{Binding HasSelection}" />
                                         <ComboBox x:Name="NotesColorComboBox"
-                                                  Width="126"
+                                                  Width="82"
                                                   SelectionChanged="NotesColorComboBox_SelectionChanged"
                                                   IsEnabled="{Binding HasSelection}">
-                                            <ComboBoxItem Content="Ink" Tag="#263238" />
-                                            <ComboBoxItem Content="Blue" Tag="#1E5C7A" />
-                                            <ComboBoxItem Content="Green" Tag="#1F6B50" />
-                                            <ComboBoxItem Content="Rose" Tag="#884B58" />
-                                            <ComboBoxItem Content="Violet" Tag="#65558F" />
+                                            <ComboBoxItem Tag="#263238"><StackPanel Orientation="Horizontal"><Rectangle Width="12" Height="12" Fill="#263238" Margin="0,0,5,0" /><TextBlock Text="Ink" /></StackPanel></ComboBoxItem>
+                                            <ComboBoxItem Tag="#1E5C7A"><StackPanel Orientation="Horizontal"><Rectangle Width="12" Height="12" Fill="#1E5C7A" Margin="0,0,5,0" /><TextBlock Text="Blue" /></StackPanel></ComboBoxItem>
+                                            <ComboBoxItem Tag="#1F6B50"><StackPanel Orientation="Horizontal"><Rectangle Width="12" Height="12" Fill="#1F6B50" Margin="0,0,5,0" /><TextBlock Text="Green" /></StackPanel></ComboBoxItem>
+                                            <ComboBoxItem Tag="#884B58"><StackPanel Orientation="Horizontal"><Rectangle Width="12" Height="12" Fill="#884B58" Margin="0,0,5,0" /><TextBlock Text="Rose" /></StackPanel></ComboBoxItem>
+                                            <ComboBoxItem Tag="#65558F"><StackPanel Orientation="Horizontal"><Rectangle Width="12" Height="12" Fill="#65558F" Margin="0,0,5,0" /><TextBlock Text="Violet" /></StackPanel></ComboBoxItem>
                                         </ComboBox>
-                                    </StackPanel>
+                                        </StackPanel>
+                                    </DockPanel>
                                 </Border>
 
                                 <RichTextBox x:Name="PromptNotesEditor"
                                              Grid.Row="1"
-                                             MinHeight="420"
+                                             MinHeight="100"
+                                             FontSize="16"
                                              BorderBrush="{StaticResource LineBrush}"
                                              BorderThickness="1"
                                              Padding="10"
@@ -313,6 +339,7 @@
                                 </Grid.RowDefinitions>
 
                                 <DockPanel Grid.Row="0" Margin="0,0,0,6">
+                                    <Button Content="&#xE740;" DockPanel.Dock="Right" Style="{StaticResource IconButtonStyle}" ToolTip="Expand Prompt editor" Click="ExpandPrompt_Click" IsEnabled="{Binding HasSelection}" />
                                     <Button Content="Insert Variable"
                                             DockPanel.Dock="Right"
                                             Padding="10,4"
@@ -325,7 +352,8 @@
                                 <TextBox x:Name="PromptBodyTextBox"
                                          Grid.Row="1"
                                          Text="{Binding SelectedPrompt.Body, UpdateSourceTrigger=PropertyChanged}"
-                                         MinHeight="430"
+                                         MinHeight="100"
+                                         FontSize="16"
                                          TextWrapping="Wrap"
                                          AcceptsReturn="True"
                                          VerticalScrollBarVisibility="Auto"
@@ -333,18 +361,7 @@
                                          Margin="0,0,0,12"
                                          IsEnabled="{Binding HasSelection}" />
 
-                                <Border Grid.Row="2" Background="{StaticResource PanelInsetBrush}" BorderBrush="{StaticResource LineBrush}" BorderThickness="1" Padding="10">
-                                    <StackPanel>
-                                        <TextBlock Text="Variables" FontWeight="SemiBold" Margin="0,0,0,6" />
-                                        <ItemsControl ItemsSource="{Binding PromptVariables}">
-                                            <ItemsControl.ItemTemplate>
-                                                <DataTemplate>
-                                                    <TextBlock Text="{Binding}" Margin="0,1" />
-                                                </DataTemplate>
-                                            </ItemsControl.ItemTemplate>
-                                        </ItemsControl>
-                                    </StackPanel>
-                                </Border>
+                                <Button Grid.Row="2" Content="Fill Variables and Copy" Command="{Binding FillVariablesCommand}" HorizontalAlignment="Left" Padding="12,5" />
                             </Grid>
                         </TabItem>
 
@@ -377,38 +394,25 @@
                         </TabItem>
 
                         <TabItem Header="Versions">
-                            <ScrollViewer VerticalScrollBarVisibility="Auto">
-                                <StackPanel Margin="12">
-                                    <Border Background="#F6E3E0" BorderBrush="#C78F89" BorderThickness="1" Padding="10" Margin="0,0,0,12">
-                                        <StackPanel>
-                                            <TextBlock Text="Version Control" FontWeight="SemiBold" Margin="0,0,0,6" />
-                                            <TextBlock Text="{Binding VersionComparisonText}" TextWrapping="Wrap" Margin="0,0,0,8" />
-                                            <TextBlock Text="Change Note" FontWeight="SemiBold" />
-                                            <TextBox Text="{Binding ChangeNote, UpdateSourceTrigger=PropertyChanged}"
-                                                     Height="84"
-                                                     TextWrapping="Wrap"
-                                                     AcceptsReturn="True"
-                                                     Margin="0,4,0,0"
-                                                     VerticalContentAlignment="Top"
-                                                     IsEnabled="{Binding HasSelection}" />
-                                        </StackPanel>
-                                    </Border>
-                                </StackPanel>
-                            </ScrollViewer>
+                            <Grid Margin="12">
+                                <Grid.RowDefinitions><RowDefinition Height="Auto" /><RowDefinition Height="*" /><RowDefinition Height="Auto" /></Grid.RowDefinitions>
+                                <ComboBox ItemsSource="{Binding Versions}" SelectedItem="{Binding SelectedVersion}" DisplayMemberPath="DisplayName" Margin="0,0,0,10" />
+                                <TabControl Grid.Row="1">
+                                    <TabItem Header="Differences"><TextBox Text="{Binding VersionComparisonText, Mode=OneWay}" IsReadOnly="True" TextWrapping="Wrap" AcceptsReturn="True" VerticalScrollBarVisibility="Auto" FontFamily="Consolas" /></TabItem>
+                                    <TabItem Header="Saved Text"><TextBox Text="{Binding SelectedVersion.Body, Mode=OneWay}" IsReadOnly="True" TextWrapping="Wrap" AcceptsReturn="True" VerticalScrollBarVisibility="Auto" FontSize="16" /></TabItem>
+                                </TabControl>
+                                <Button Grid.Row="2" Content="Restore Revision as Draft" Command="{Binding RestoreVersionCommand}" HorizontalAlignment="Left" Padding="10,6" Margin="0,10,0,0" />
+                            </Grid>
                         </TabItem>
                     </TabControl>
 
-                    <UniformGrid Grid.Row="3" Columns="2" Margin="0,0,0,10">
-                        <Button Content="Save" Command="{Binding SaveCommand}" Margin="0,0,5,6" Padding="10,7" />
-                        <Button Content="Copy" Command="{Binding CopyCommand}" Margin="5,0,0,6" Padding="10,7" />
-                        <Button Content="Favorite" Command="{Binding ToggleFavoriteCommand}" Margin="0,0,5,6" Padding="10,7" />
-                        <Button Content="Archive" Command="{Binding ArchiveCommand}" Margin="5,0,0,6" Padding="10,7" />
-                        <Button Content="Delete" Command="{Binding DeleteCommand}" Margin="0,0,5,6" Padding="10,7" Background="{StaticResource RoseBrush}" BorderBrush="#C78F89" />
-                        <Button Content="Restore" Command="{Binding RestorePromptCommand}" Margin="5,0,0,6" Padding="10,7" />
-                        <Button Content="Refresh" Command="{Binding RefreshCommand}" Margin="0,0,5,0" Padding="10,7" />
-                    </UniformGrid>
+                    <DockPanel Grid.Row="3" Margin="0,0,0,8">
+                        <Menu DockPanel.Dock="Right" Background="Transparent" VerticalAlignment="Center"><MenuItem Header="More"><MenuItem Header="Toggle Favorite" Command="{Binding ToggleFavoriteCommand}" /><MenuItem Header="Archive" Command="{Binding ArchiveCommand}" /><MenuItem Header="Restore from Archive" Command="{Binding RestorePromptCommand}" /><Separator /><MenuItem Header="Delete Permanently" Command="{Binding DeleteCommand}" /></MenuItem></Menu>
+                        <Button Content="&#xE74E;" Command="{Binding SaveCommand}" Style="{StaticResource IconButtonStyle}" ToolTip="Save revision (Ctrl+S)" Background="{StaticResource AccentBrush}" />
+                        <Button Content="&#xE8C8;" Command="{Binding CopyCommand}" Style="{StaticResource IconButtonStyle}" ToolTip="Copy prompt text" HorizontalAlignment="Left" />
+                    </DockPanel>
 
-                    <TextBlock Grid.Row="4" Text="{Binding StatusMessage}" Foreground="{StaticResource MutedInkBrush}" TextWrapping="Wrap" />
+                    <TextBlock Grid.Row="4" Text="{Binding StatusMessage}" Foreground="{StaticResource MutedInkBrush}" TextWrapping="Wrap" MaxHeight="40" ToolTip="{Binding StatusMessage}" />
                 </Grid>
             </Border>        </Grid>
 

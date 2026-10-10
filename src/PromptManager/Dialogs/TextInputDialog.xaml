@@ -6,6 +6,7 @@
         ResizeMode="NoResize"
         WindowStartupLocation="CenterOwner"
         Title="Prompt Manager"
+        Icon="pack://application:,,,/PromptManager;component/Assets/PromptManager.ico"
         Background="#FFF6DC">
     <Grid Margin="16">
         <Grid.RowDefinitions>

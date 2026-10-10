@@ -13,3 +13,4 @@ artifacts/publish/
 artifacts/smoke/AppData/
 artifacts/smoke/**/bin/
 artifacts/smoke/**/obj/
+artifacts/verification/

@@ -1,5 +1,7 @@
 # Prompt Manager Handoff Document
 
+> **Current handoff:** See `UPGRADE_NOTES.md` for version 1.4.0, the current `D:\dev\Prompt_Manager` location, verification, and packaging. The remainder of this document is a historical handoff and its earlier hashes/paths are not current release evidence.
+
 Prepared: 2026-06-18
 Application: Prompt Manager
 Project type: Standalone Windows 11 desktop application

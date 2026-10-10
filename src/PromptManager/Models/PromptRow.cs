@@ -87,6 +87,7 @@ public sealed class PromptRow : ObservableObject
     }
 
     public int Version { get; init; }
+    public int Revision { get; init; }
 
     public string VersionLabel => $"v{Version}";
 

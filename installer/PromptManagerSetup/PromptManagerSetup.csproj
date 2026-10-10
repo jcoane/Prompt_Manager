@@ -8,11 +8,17 @@
     <AssemblyName>PromptManagerSetup</AssemblyName>
     <RootNamespace>PromptManagerSetup</RootNamespace>
     <ApplicationManifest>app.manifest</ApplicationManifest>
-    <ApplicationIcon />
+    <ApplicationIcon>..\..\src\PromptManager\Assets\PromptManager.ico</ApplicationIcon>
+    <Version>1.4.0</Version>
+    <FileVersion>1.4.0.0</FileVersion>
   </PropertyGroup>
 
   <ItemGroup>
-    <EmbeddedResource Include="..\..\artifacts\installer\payload.zip" LogicalName="PromptManagerSetup.Payload.zip" />
+    <EmbeddedResource Include="..\..\src\PromptManager\Assets\PromptManager.ico" LogicalName="PromptManagerSetup.AppIcon.ico" />
+    <EmbeddedResource Include="..\..\artifacts\installer\payload.zip" LogicalName="PromptManagerSetup.Payload.zip" Condition="Exists('..\..\artifacts\installer\payload.zip')" />
   </ItemGroup>
+  <Target Name="CheckInstallerPayload" BeforeTargets="Publish">
+    <Error Condition="!Exists('..\..\artifacts\installer\payload.zip')" Text="Run tools\Build-Installer.ps1 to create the application payload before publishing Setup." />
+  </Target>
 </Project>
 

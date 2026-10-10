@@ -13,6 +13,7 @@ public sealed class MainViewModel : ObservableObject
 {
     private readonly PromptRepository _repository;
     private readonly PromptFileService _fileService;
+    private readonly System.Windows.Threading.DispatcherTimer _analysisTimer = new() { Interval = TimeSpan.FromMilliseconds(300) };
     private PromptRow? _subscribedPrompt;
     private PromptSnapshot? _selectedPromptSnapshot;
     private bool _isInternalPromptSelection;
@@ -26,6 +27,7 @@ public sealed class MainViewModel : ObservableObject
     private string _changeNote = "";
     private string? _selectedLabelToAdd;
     private string _versionComparisonText = "";
+    private PromptVersionExportDto? _selectedVersion;
     private string _resultSummary = "";
     private string _statusMessage = "Ready.";
 
@@ -38,6 +40,7 @@ public sealed class MainViewModel : ObservableObject
         Filters.Add(new FilterItem(PromptFilterKind.Favorites, "Favorites"));
         Filters.Add(new FilterItem(PromptFilterKind.RecentlyUsed, "Recently Used"));
         Filters.Add(new FilterItem(PromptFilterKind.Drafts, "Drafts"));
+        Filters.Add(new FilterItem(PromptFilterKind.InReview, "In Review"));
         Filters.Add(new FilterItem(PromptFilterKind.Approved, "Approved"));
         Filters.Add(new FilterItem(PromptFilterKind.Retired, "Retired"));
         _selectedFilter = Filters[0];
@@ -46,6 +49,13 @@ public sealed class MainViewModel : ObservableObject
         ClearSearchCommand = new RelayCommand(ClearSearch);
         NewFolderCommand = new RelayCommand(CreateFolder);
         DeleteFolderCommand = new RelayCommand(DeleteSelectedFolder, () => SelectedFolder is not null);
+        RenameFolderCommand = new RelayCommand(RenameFolder, () => HasSelectedFolder);
+        MoveFolderCommand = new RelayCommand(MoveFolder, () => HasSelectedFolder);
+        MoveSelectedCommand = new RelayCommand(MoveSelected, () => SelectedPromptIds.Count > 0);
+        FillVariablesCommand = new RelayCommand(FillVariables, () => HasSelection);
+        RestoreVersionCommand = new RelayCommand(RestoreSavedVersion, () => SelectedVersion != null);
+        ExportViewCommand = new RelayCommand(() => ExportScope(Prompts.Select(prompt => prompt.Id), "Current View"));
+        ExportLibraryCommand = new RelayCommand(() => ExportScope(null, "Entire Library"));
         NewPromptCommand = new RelayCommand(CreatePrompt);
         SaveCommand = new RelayCommand(SaveSelectedPrompt, () => HasSelection);
         AddLabelCommand = new RelayCommand(AddSelectedLabel, () => HasSelection && !string.IsNullOrWhiteSpace(SelectedLabelToAdd));
@@ -60,6 +70,7 @@ public sealed class MainViewModel : ObservableObject
         BackupCommand = new RelayCommand(BackupDatabase);
         RestoreCommand = new RelayCommand(RestoreDatabase);
 
+        _analysisTimer.Tick += (_, _) => { _analysisTimer.Stop(); RefreshSelectedPromptAnalysis(); };
         RefreshAll();
     }
 
@@ -80,6 +91,21 @@ public sealed class MainViewModel : ObservableObject
     public ObservableCollection<string> DuplicateWarnings { get; } = new();
 
     public ObservableCollection<PromptRow> Prompts { get; } = new();
+    public ObservableCollection<PromptVersionExportDto> Versions { get; } = new();
+    public List<int> SelectedPromptIds { get; } = new();
+    public RelayCommand RenameFolderCommand { get; }
+    public RelayCommand MoveFolderCommand { get; }
+    public RelayCommand MoveSelectedCommand { get; }
+    public RelayCommand FillVariablesCommand { get; }
+    public RelayCommand RestoreVersionCommand { get; }
+    public RelayCommand ExportViewCommand { get; }
+    public RelayCommand ExportLibraryCommand { get; }
+
+    public PromptVersionExportDto? SelectedVersion
+    {
+        get => _selectedVersion;
+        set { if (SetProperty(ref _selectedVersion, value)) { RefreshVersionComparison(); RestoreVersionCommand.RaiseCanExecuteChanged(); } }
+    }
 
     public IReadOnlyList<PromptStatus> Statuses { get; } = Enum.GetValues<PromptStatus>();
 
@@ -196,6 +222,8 @@ public sealed class MainViewModel : ObservableObject
                 OnPropertyChanged(nameof(RegisterTitle));
                 OnPropertyChanged(nameof(HasSelectedFolder));
                 DeleteFolderCommand.RaiseCanExecuteChanged();
+                RenameFolderCommand.RaiseCanExecuteChanged();
+                MoveFolderCommand.RaiseCanExecuteChanged();
             }
         }
     }
@@ -284,6 +312,7 @@ public sealed class MainViewModel : ObservableObject
     }
 
     public string DatabasePath => _repository.DatabasePath;
+    public string GetRecoveryReport() => System.Text.Json.JsonSerializer.Serialize(_repository.GetRecoveryHistory(), new System.Text.Json.JsonSerializerOptions { WriteIndented = true });
 
     private void RefreshAll()
     {
@@ -450,15 +479,16 @@ public sealed class MainViewModel : ObservableObject
         var previousId = preferredPromptId ?? SelectedPrompt?.Id;
         var rows = _repository.GetPrompts(filter, SelectedFolder?.Id, SearchText);
 
-        Prompts.Clear();
-        foreach (var row in rows)
+        _isInternalPromptSelection = true;
+        try
         {
-            Prompts.Add(row);
+            Prompts.Clear();
+            foreach (var row in rows) Prompts.Add(row);
+            SetSelectedPrompt(previousId.HasValue
+                ? Prompts.FirstOrDefault(prompt => prompt.Id == previousId.Value) ?? Prompts.FirstOrDefault()
+                : Prompts.FirstOrDefault());
         }
-
-        SetSelectedPromptFromRefresh(previousId.HasValue
-            ? Prompts.FirstOrDefault(prompt => prompt.Id == previousId.Value) ?? Prompts.FirstOrDefault()
-            : Prompts.FirstOrDefault());
+        finally { _isInternalPromptSelection = false; }
 
         ResultSummary = Prompts.Count == 1 ? "1 prompt" : Prompts.Count + " prompts";
         OnPropertyChanged(nameof(RegisterTitle));
@@ -554,6 +584,8 @@ public sealed class MainViewModel : ObservableObject
 
         try
         {
+            _searchText = "";
+            OnPropertyChanged(nameof(SearchText));
             SelectedFilter = Filters.First(filter => filter.Kind == PromptFilterKind.All);
             var promptId = _repository.CreatePrompt(SelectedFolder?.Id);
             RefreshCounts();
@@ -578,13 +610,15 @@ public sealed class MainViewModel : ObservableObject
             var recordChanged = _repository.HasControlledRecordChanges(SelectedPrompt);
             if (recordChanged && string.IsNullOrWhiteSpace(ChangeNote))
             {
-                StatusMessage = "Enter a change note before saving controlled record changes.";
-                MessageBox.Show("Enter a change note before saving controlled record changes.", "Prompt Manager", MessageBoxButton.OK, MessageBoxImage.Information);
-                return;
+                var dialog = new TextInputDialog("Save Revision", "Change note", "") { Owner = Application.Current.MainWindow };
+                if (dialog.ShowDialog() != true) return;
+                ChangeNote = dialog.Value;
             }
 
             var promptMoved = _selectedPromptOriginalFolderId != SelectedPrompt.FolderId;
             var saved = _repository.SavePrompt(SelectedPrompt, ChangeNote);
+            _selectedPromptSnapshot = PromptSnapshot.From(SelectedPrompt);
+            OnPropertyChanged(nameof(HasUnsavedChanges));
 
             if (promptMoved)
             {
@@ -782,9 +816,15 @@ public sealed class MainViewModel : ObservableObject
 
     private void ExportPrompts()
     {
+        ExportScope(SelectedPromptIds.Count > 0 ? SelectedPromptIds : SelectedPrompt == null ? Array.Empty<int>() : new[] { SelectedPrompt.Id }, "Selected Prompts");
+    }
+
+    private void ExportScope(IEnumerable<int>? ids, string scope)
+    {
+        if (!ConfirmDiscardUnsavedChanges()) return;
         try
         {
-            var exportedTo = _fileService.Export(SelectedPrompt?.Id);
+            var exportedTo = _fileService.Export(ids?.ToArray(), scope);
             if (exportedTo is null)
             {
                 return;
@@ -843,7 +883,8 @@ public sealed class MainViewModel : ObservableObject
     {
         if (e.PropertyName is nameof(PromptRow.Title) or nameof(PromptRow.Body) or nameof(PromptRow.Tags) or nameof(PromptRow.Labels) or nameof(PromptRow.Type) or nameof(PromptRow.Mode) or nameof(PromptRow.Status) or nameof(PromptRow.Notes) or nameof(PromptRow.FormattedNotes) or nameof(PromptRow.FolderId))
         {
-            RefreshSelectedPromptAnalysis();
+            _analysisTimer.Stop();
+            _analysisTimer.Start();
         }
 
         OnPropertyChanged(nameof(HasUnsavedChanges));
@@ -862,6 +903,75 @@ public sealed class MainViewModel : ObservableObject
             labels.Add(SelectedLabelToAdd.Trim());
             SelectedPrompt.Labels = string.Join("; ", labels);
         }
+    }
+
+    private void RenameFolder()
+    {
+        if (!ConfirmDiscardUnsavedChanges() || SelectedFolder == null) return;
+        var folder = SelectedFolder;
+        var dialog = new TextInputDialog("Rename Folder", "Folder name", folder.Name) { Owner = Application.Current.MainWindow };
+        if (dialog.ShowDialog() != true) return;
+        try { _repository.UpdateFolder(folder.Id, dialog.Value, folder.ParentId); RefreshAll(); StatusMessage = "Folder renamed."; }
+        catch (Exception ex) { ShowError(ex); }
+    }
+
+    private void MoveFolder()
+    {
+        if (!ConfirmDiscardUnsavedChanges() || SelectedFolder == null) return;
+        var folder = SelectedFolder;
+        var excluded = new HashSet<int>();
+        AddChildren(folder);
+        var choices = new[] { new FolderOption(FolderOption.UnfiledId, "Top Level") }
+            .Concat(FolderOptions.Where(option => option.Id != FolderOption.UnfiledId && !excluded.Contains(option.Id)));
+        var dialog = new FolderPickerDialog("Move Folder", choices, folder.ParentId) { Owner = Application.Current.MainWindow };
+        if (dialog.ShowDialog() != true) return;
+        try { _repository.UpdateFolder(folder.Id, folder.Name, dialog.FolderId); RefreshAll(); StatusMessage = "Folder moved."; }
+        catch (Exception ex) { ShowError(ex); }
+        void AddChildren(FolderNode node) { excluded.Add(node.Id); foreach (var child in node.Children) AddChildren(child); }
+    }
+
+    private void MoveSelected()
+    {
+        var ids = SelectedPromptIds.ToArray();
+        if (ids.Length == 0 || !ConfirmDiscardUnsavedChanges()) return;
+        var dialog = new FolderPickerDialog("Move " + ids.Length + " Prompts", FolderOptions, SelectedPrompt?.FolderId) { Owner = Application.Current.MainWindow };
+        if (dialog.ShowDialog() != true) return;
+        try
+        {
+            _repository.MovePrompts(ids, dialog.FolderId, "Moved using register selection");
+            RefreshFolders(dialog.FolderId, false); RefreshCounts(); RefreshPrompts(ids[0]);
+            StatusMessage = "Moved " + ids.Length + " prompts.";
+        }
+        catch (Exception ex) { ShowError(ex); }
+    }
+
+    private void FillVariables()
+    {
+        if (SelectedPrompt == null) return;
+        var dialog = new VariableDialog(SelectedPrompt.Body) { Owner = Application.Current.MainWindow };
+        if (dialog.ShowDialog() == true)
+        {
+            _repository.MarkUsed(SelectedPrompt.Id); RefreshCounts();
+            StatusMessage = "Copied filled prompt. The stored template is unchanged.";
+        }
+    }
+
+    private void RestoreSavedVersion()
+    {
+        if (SelectedPrompt == null || SelectedVersion == null) return;
+        var id = SelectedPrompt.Id; var number = SelectedVersion.VersionNumber;
+        if (!ConfirmDiscardUnsavedChanges() || SelectedPrompt?.Id != id) return;
+        var dialog = new TextInputDialog("Restore Revision v" + number, "Reason (a new Draft revision will be created)", "") { Owner = Application.Current.MainWindow };
+        if (dialog.ShowDialog() != true) return;
+        try
+        {
+            var saved = _repository.RestoreVersion(id, number, dialog.Value, SelectedPrompt.Revision);
+            _searchText = ""; OnPropertyChanged(nameof(SearchText));
+            SelectedFilter = Filters.First(filter => filter.Kind == PromptFilterKind.All);
+            RefreshFolders(saved.FolderId, false); RefreshCounts(); RefreshPrompts(id);
+            StatusMessage = "Restored v" + number + " as a new Draft revision. Existing history was retained.";
+        }
+        catch (Exception ex) { ShowError(ex); }
     }
 
     private void ApplyModeTemplate()
@@ -971,10 +1081,15 @@ public sealed class MainViewModel : ObservableObject
             ArchiveCommand.RaiseCanExecuteChanged();
             RestorePromptCommand.RaiseCanExecuteChanged();
             DeleteCommand.RaiseCanExecuteChanged();
+            FillVariablesCommand.RaiseCanExecuteChanged();
             _selectedPromptOriginalFolderId = value?.FolderId;
             _selectedPromptFolderOptionId = value?.FolderId ?? FolderOption.UnfiledId;
             OnPropertyChanged(nameof(SelectedPromptFolderOptionId));
             ChangeNote = "";
+            Versions.Clear();
+            if (value != null)
+                foreach (var version in _repository.GetPromptVersions(value.Id).Reverse()) Versions.Add(version);
+            SelectedVersion = Versions.FirstOrDefault();
             RefreshSelectedPromptAnalysis();
         }
     }
@@ -996,10 +1111,7 @@ public sealed class MainViewModel : ObservableObject
             return;
         }
 
-        var variables = Regex.Matches(SelectedPrompt.Body ?? "", @"\{\{\s*([A-Za-z_][A-Za-z0-9_.-]*)\s*\}\}")
-            .Select(match => match.Groups[1].Value)
-            .Distinct(StringComparer.CurrentCultureIgnoreCase)
-            .OrderBy(variable => variable, StringComparer.CurrentCultureIgnoreCase);
+        var variables = VariableRenderer.Names(SelectedPrompt.Body ?? "");
 
         foreach (var variable in variables)
         {
@@ -1100,28 +1212,13 @@ public sealed class MainViewModel : ObservableObject
             return;
         }
 
-        var versions = _repository.GetPromptVersions(SelectedPrompt.Id).OrderBy(version => version.VersionNumber).ToList();
-        if (versions.Count == 0)
+        if (SelectedVersion == null)
         {
-            VersionComparisonText = "No saved body versions yet.";
+            VersionComparisonText = "No saved revisions.";
             return;
         }
-
-        var latest = versions[^1];
-        if (!string.Equals(latest.Body, SelectedPrompt.Body, StringComparison.Ordinal))
-        {
-            VersionComparisonText = BuildVersionComparison("Unsaved body changes compared with v" + latest.VersionNumber, latest.Body, SelectedPrompt.Body);
-            return;
-        }
-
-        if (versions.Count == 1)
-        {
-            VersionComparisonText = "Only one saved body version.";
-            return;
-        }
-
-        var previous = versions[^2];
-        VersionComparisonText = BuildVersionComparison("Latest saved change v" + previous.VersionNumber + " -> v" + latest.VersionNumber + " (" + latest.ChangeNote + ")", previous.Body, latest.Body);
+        var path = SelectedPrompt.FolderId.HasValue ? FolderOptions.FirstOrDefault(folder => folder.Id == SelectedPrompt.FolderId)?.Path ?? "(missing directory)" : "Unfiled";
+        VersionComparisonText = VersionComparison.Compare(SelectedVersion, SelectedPrompt, path);
     }
 
     private static string BuildVersionComparison(string title, string oldBody, string newBody)

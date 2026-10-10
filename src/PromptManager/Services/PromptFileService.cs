@@ -20,14 +20,14 @@ public sealed class PromptFileService
         _repository = repository;
     }
 
-    public string? Export(int? promptId)
+    public string? Export(IEnumerable<int>? promptIds, string scope)
     {
-        var package = _repository.CreateExportPackage(promptId);
-        var defaultName = promptId.HasValue ? "prompt-export.json" : "prompt-library-export.json";
+        var package = _repository.CreateScopedExport(promptIds);
+        var defaultName = "prompt-" + scope.ToLowerInvariant().Replace(' ', '-') + "-export.json";
 
         var dialog = new SaveFileDialog
         {
-            Title = "Export Prompts",
+            Title = "Export " + scope + " (" + package.Prompts.Count + " prompts)",
             Filter = "Prompt Manager export (*.json)|*.json|All files (*.*)|*.*",
             FileName = defaultName,
             AddExtension = true,

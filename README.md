@@ -1,5 +1,8 @@
 # Prompt Manager
 
+Current version: **1.4.0**. Active project: `D:\dev\Prompt_Manager`.
+Installer: `artifacts\installer\PromptManagerSetup.exe`. The self-contained installer includes the desktop runtime and offline manual.
+
 Prompt Manager is a standalone Windows 11 desktop application for managing reusable prompts locally.
 
 ## Stack
@@ -17,7 +20,7 @@ This app is intentionally offline-only. It has no login, no cloud sync, no telem
 
 ## Build
 
-Open `PromptManager.sln` in Visual Studio 2022 or run:
+Use an IDE supporting the installed .NET 10 SDK, or run:
 
 ```powershell
 dotnet restore
@@ -47,11 +50,34 @@ The local database is created under:
 - Favorites, recently used, archive, restore, permanent prompt delete, and safe folder delete
 - Prompt path dropdown for moving prompts between folders
 - Prompt version history with required change notes for controlled record changes
-- Version comparison summary
+- Selectable saved revisions, metadata and line differences, restore as a new Draft revision
 - Full-text prompt search over type, mode, labels, title, body, tags, and notes where SQLite FTS5 is available
 - Copy prompt text to clipboard with last-used tracking
 - Local JSON import/export
 - Local SQLite database backup/restore
+
+## Version 1.4 Upgrades
+
+- Embedded left-pointing flaming-arrow icons for the app, windows, Explorer, Setup, and installed shortcuts
+- Compact File menu and folder commands, persistent columns/sort/pane settings, explicit unsaved indicator
+- Full-height Notes/Prompt editors, reading size, and expandable editing windows
+- Folder rename/move and transactional multi-prompt moves
+- Offline variable filling, preview, and copy without changing the stored template
+- Explicit selected/current-view/entire-library exports
+- Optimistic edit revision checks, versioned archive/restore/folder relocation
+- SQLite snapshot backups, staged validated restores, pre-upgrade backups, no automatic example reseeding
+- Recovery table for detached historical entries, with complete original snapshots and a pre-recovery backup
+- Installer refuses to close a running app and rolls back failed application-file updates
+
+## Verification and Packaging
+
+```powershell
+dotnet build PromptManager.sln -c Release -p:NuGetAudit=false -m:1
+dotnet run --project artifacts\smoke\UpgradeSafetySmoke -c Release --no-build
+.\tools\Build-Installer.ps1
+```
+
+The regression harness uses temporary libraries and a test-only startup mode. The four original smoke projects remain in the solution. Verification notes and residual limitations are in `UPGRADE_NOTES.md`. No test pass constitutes formal validation or quality approval.
 
 
 

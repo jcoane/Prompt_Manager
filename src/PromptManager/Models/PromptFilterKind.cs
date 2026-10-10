@@ -6,6 +6,7 @@ public enum PromptFilterKind
     Favorites,
     RecentlyUsed,
     Drafts,
+    InReview,
     Approved,
     Retired
 }

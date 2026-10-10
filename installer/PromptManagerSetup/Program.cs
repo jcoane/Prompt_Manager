@@ -13,7 +13,7 @@ internal static class Program
     private const string InstallManifestName = "install-manifest.txt";
     private const string UninstallScriptName = "UninstallPromptManager.ps1";
     private const string UninstallCommandName = "Uninstall Prompt Manager.cmd";
-    private const string InstallerVersion = "1.3.0";
+    private const string InstallerVersion = "1.4.0";
 
     [STAThread]
     private static void Main(string[] args)
@@ -47,6 +47,10 @@ internal static class Program
         {
             _options = options;
             Text = "Prompt Manager Setup";
+            using var iconStream = Assembly.GetExecutingAssembly().GetManifestResourceStream("PromptManagerSetup.AppIcon.ico")
+                ?? throw new InvalidOperationException("The installer icon is missing.");
+            using var applicationIcon = new Icon(iconStream);
+            Icon = (Icon)applicationIcon.Clone();
             StartPosition = FormStartPosition.CenterScreen;
             FormBorderStyle = FormBorderStyle.FixedDialog;
             MaximizeBox = false;
@@ -286,6 +290,9 @@ internal static class Program
 
         private static string GetDefaultInstallDirectory()
         {
+            using var existing = Registry.LocalMachine.OpenSubKey(@"SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\PromptManager");
+            if (existing?.GetValue("InstallLocation") is string installedPath && File.Exists(Path.Combine(installedPath, ExeName)))
+                return installedPath;
             var programFilesX86 = Environment.GetFolderPath(Environment.SpecialFolder.ProgramFilesX86);
             if (string.IsNullOrWhiteSpace(programFilesX86))
             {
@@ -303,9 +310,23 @@ internal static class Program
             CloseRunningPromptManager();
             Directory.CreateDirectory(options.InstallDirectory);
 
-            progress?.Invoke(8, "Extracting application files...");
-            RemovePreviousInstalledFiles(options.InstallDirectory);
-            var installedFiles = ExtractPayload(options.InstallDirectory, progress);
+            progress?.Invoke(8, "Preparing application files...");
+            var stagingDirectory = Path.Combine(Path.GetTempPath(), "PromptManagerSetup-" + Guid.NewGuid().ToString("N"));
+            Directory.CreateDirectory(stagingDirectory);
+            IReadOnlyList<string> installedFiles;
+            var preserveRecoveryFiles = false;
+            try
+            {
+                installedFiles = ExtractPayload(stagingDirectory, progress);
+                if (!File.Exists(Path.Combine(stagingDirectory, ExeName))) throw new InvalidOperationException("The installer payload is incomplete.");
+                InstallPayloadFiles(stagingDirectory, options.InstallDirectory, installedFiles);
+            }
+            catch (AggregateException) { preserveRecoveryFiles = true; throw; }
+            finally
+            {
+                // Only the unique setup-owned staging directory is removed.
+                if (!preserveRecoveryFiles && IsUnderInstallRoot(stagingDirectory, Path.GetTempPath())) Directory.Delete(stagingDirectory, true);
+            }
 
             var appExe = Path.Combine(options.InstallDirectory, ExeName);
             if (!File.Exists(appExe))
@@ -361,21 +382,56 @@ internal static class Program
         {
             foreach (var process in Process.GetProcessesByName("PromptManager"))
             {
+                using (process)
+                    if (!process.HasExited) throw new InvalidOperationException("Save your changes and close Prompt Manager before installing. The installer will not force-close it.");
+            }
+        }
+
+        internal static void InstallPayloadFiles(string stagingDirectory, string installDirectory, IReadOnlyList<string> files)
+        {
+            var previous = Path.Combine(installDirectory, InstallManifestName);
+            var oldFiles = File.Exists(previous) ? ReadManifestEntries(previous).ToArray() : Array.Empty<string>();
+            var affected = oldFiles.Concat(files).Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
+            var rollback = Path.Combine(stagingDirectory, ".rollback");
+            Directory.CreateDirectory(rollback);
+            var preserved = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            foreach (var file in affected)
+            {
+                var target = GetManifestFilePath(installDirectory, file) ?? throw new InvalidOperationException("Invalid installation file path.");
+                var backup = GetManifestFilePath(rollback, file) ?? throw new InvalidOperationException("Invalid rollback file path.");
+                if (File.Exists(target)) { Directory.CreateDirectory(Path.GetDirectoryName(backup)!); File.Copy(target, backup, true); preserved.Add(file); }
+            }
+            var changed = new List<string>();
+            try
+            {
+                foreach (var file in files)
+                {
+                    var source = GetManifestFilePath(stagingDirectory, file) ?? throw new InvalidOperationException("Invalid payload file path.");
+                    var target = GetManifestFilePath(installDirectory, file)!;
+                    Directory.CreateDirectory(Path.GetDirectoryName(target)!);
+                    var pending = target + ".setup-" + Guid.NewGuid().ToString("N") + ".tmp";
+                    try { File.Copy(source, pending); File.Move(pending, target, true); changed.Add(file); }
+                    finally { if (File.Exists(pending)) File.Delete(pending); }
+                }
+                foreach (var file in oldFiles.Except(files, StringComparer.OrdinalIgnoreCase))
+                {
+                    var target = GetManifestFilePath(installDirectory, file)!;
+                    if (File.Exists(target)) { File.Delete(target); changed.Add(file); }
+                }
+            }
+            catch (Exception installError)
+            {
                 try
                 {
-                    if (!process.CloseMainWindow())
+                    foreach (var file in changed.Distinct(StringComparer.OrdinalIgnoreCase).Reverse())
                     {
-                        process.Kill(true);
-                    }
-                    else if (!process.WaitForExit(5000))
-                    {
-                        process.Kill(true);
+                        var target = GetManifestFilePath(installDirectory, file)!;
+                        if (preserved.Contains(file)) File.Copy(GetManifestFilePath(rollback, file)!, target, true);
+                        else if (File.Exists(target)) File.Delete(target);
                     }
                 }
-                catch
-                {
-                    // Best effort. Extraction will fail if files remain locked.
-                }
+                catch (Exception rollbackError) { throw new AggregateException("Installation and recovery failed. Original files are retained in " + rollback, installError, rollbackError); }
+                throw new InvalidOperationException("Installation failed. Previous application files were restored. " + installError.Message, installError);
             }
         }
 
@@ -528,7 +584,7 @@ internal static class Program
             dynamic shortcut = shell.CreateShortcut(shortcutPath);
             shortcut.TargetPath = targetPath;
             shortcut.WorkingDirectory = workingDirectory;
-            shortcut.IconLocation = targetPath;
+            shortcut.IconLocation = targetPath + ",0";
             shortcut.Description = description;
             shortcut.Save();
         }
@@ -546,8 +602,13 @@ $root = [System.IO.Path]::GetFullPath($installDirectory).TrimEnd('\', '/')
 $rootPrefix = $root + [System.IO.Path]::DirectorySeparatorChar
 $removedPaths = New-Object System.Collections.Generic.List[string]
 
-Get-Process PromptManager | Stop-Process -Force
-Remove-Item -LiteralPath "$env:USERPROFILE\Desktop\Prompt Manager.lnk" -Force
+if (Get-Process PromptManager -ErrorAction SilentlyContinue) {
+    Add-Type -AssemblyName PresentationFramework
+    [System.Windows.MessageBox]::Show('Save your changes and close Prompt Manager before uninstalling. Your prompt library will be kept.', 'Prompt Manager') | Out-Null
+    exit 1
+}
+$desktop = [Environment]::GetFolderPath('DesktopDirectory')
+Remove-Item -LiteralPath (Join-Path $desktop 'Prompt Manager.lnk') -Force
 Remove-Item -LiteralPath "$env:APPDATA\Microsoft\Windows\Start Menu\Programs\Prompt Manager.lnk" -Force
 Remove-Item -LiteralPath "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\PromptManager" -Recurse -Force
 

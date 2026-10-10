@@ -1,6 +1,7 @@
 using System.Globalization;
 using System.IO;
 using System.Text.RegularExpressions;
+using System.Text.Json;
 using Microsoft.Data.Sqlite;
 using PromptManager.Models;
 
@@ -8,6 +9,8 @@ namespace PromptManager.Data;
 
 public sealed class PromptRepository
 {
+    private const int SchemaVersion = 4;
+    private const int ApplicationId = 0x504D4752;
     private bool _isFtsAvailable;
 
     public PromptRepository(string? databasePath = null)
@@ -24,22 +27,96 @@ public sealed class PromptRepository
 
     public string DatabasePath { get; }
 
-    public void Initialize()
+    public void Initialize(bool createUpgradeBackup = true)
     {
         Directory.CreateDirectory(Path.GetDirectoryName(DatabasePath)!);
-
+        if (File.Exists(DatabasePath) && new FileInfo(DatabasePath).Length > 0)
+            ValidateBackupDatabase(DatabasePath);
         using var connection = OpenConnection();
+        if (ReadPragma(connection, "user_version") > SchemaVersion)
+            throw new InvalidOperationException("This library was created by a newer version of Prompt Manager.");
+        if (createUpgradeBackup && new FileInfo(DatabasePath).Length > 0 && ReadPragma(connection, "user_version") < SchemaVersion)
+            CopyDatabaseSnapshot(DatabasePath, Path.Combine(Path.GetDirectoryName(DatabasePath)!, "pre-upgrade-" + DateTime.Now.ToString("yyyyMMdd-HHmmss") + "-" + Guid.NewGuid().ToString("N")[..8] + ".db"));
         CreateSchema(connection);
         MigrateSchema(connection);
-        SeedIfEmpty(connection);
         SeedPromptTypes(connection);
         SeedPromptLabels(connection);
         _isFtsAvailable = TryEnsureFullTextSearch(connection);
 
-        if (_isFtsAvailable)
+        ExecuteNonQuery(connection, $"PRAGMA user_version = {SchemaVersion}; PRAGMA application_id = {ApplicationId};");
+    }
+
+    public void AddExamples()
+    {
+        using var connection = OpenConnection();
+        SeedIfEmpty(connection);
+    }
+
+    public int DetachedHistoryCount()
+    {
+        if (!File.Exists(DatabasePath)) return 0;
+        using var connection = new SqliteConnection(new SqliteConnectionStringBuilder { DataSource = DatabasePath, Mode = SqliteOpenMode.ReadOnly, Pooling = false }.ToString());
+        connection.Open();
+        if (!ColumnExists(connection, "PromptVersions", "PromptId") || !ColumnExists(connection, "Prompts", "Id")) return 0;
+        using var command = connection.CreateCommand();
+        command.CommandText = "SELECT COUNT(*) FROM PromptVersions WHERE PromptId NOT IN (SELECT Id FROM Prompts);";
+        return Convert.ToInt32(command.ExecuteScalar());
+    }
+
+    public string? RecoverDetachedHistory()
+    {
+        ValidateBackupDatabase(DatabasePath, allowDetachedHistory: true);
+        if (DetachedHistoryCount() == 0) return null;
+        using var connection = OpenConnection();
+        using var transaction = connection.BeginTransaction();
+        var safety = Path.Combine(Path.GetDirectoryName(DatabasePath)!, "pre-recovery-" + DateTime.Now.ToString("yyyyMMdd-HHmmss") + "-" + Guid.NewGuid().ToString("N")[..8] + ".db");
+        CopyDatabaseSnapshot(DatabasePath, safety);
+        CreateRecoveryTable(connection, transaction);
+        var records = new List<Dictionary<string, object?>>();
+        using (var command = connection.CreateCommand())
         {
-            ExecuteNonQuery(connection, "INSERT INTO PromptSearch(PromptSearch) VALUES('rebuild');");
+            command.Transaction = transaction;
+            command.CommandText = "SELECT * FROM PromptVersions WHERE PromptId NOT IN (SELECT Id FROM Prompts);";
+            using var reader = command.ExecuteReader();
+            while (reader.Read())
+                records.Add(Enumerable.Range(0, reader.FieldCount).ToDictionary(reader.GetName, i => reader.IsDBNull(i) ? null : reader.GetValue(i)));
         }
+        foreach (var record in records)
+        {
+            InsertRecoveryRecord(connection, transaction, new RecoveryHistoryDto { OriginalVersionId = Convert.ToInt64(record["Id"]),
+                OriginalPromptId = Convert.ToInt64(record["PromptId"]), VersionNumber = Convert.ToInt32(record["VersionNumber"]),
+                SnapshotJson = JsonSerializer.Serialize(record), RecoveredAt = DateTime.Now,
+                Reason = "Detached historical version: no matching prompt. Original fields retained during relationship repair." });
+            using var delete = connection.CreateCommand();
+            delete.Transaction = transaction; delete.CommandText = "DELETE FROM PromptVersions WHERE Id=$id;";
+            delete.Parameters.AddWithValue("$id", record["Id"]!); delete.ExecuteNonQuery();
+        }
+        transaction.Commit();
+        return safety;
+    }
+
+    public IReadOnlyList<RecoveryHistoryDto> GetRecoveryHistory()
+    {
+        using var connection = OpenConnection();
+        if (!ColumnExists(connection, "RecoveryHistory", "SnapshotJson")) return Array.Empty<RecoveryHistoryDto>();
+        using var command = connection.CreateCommand();
+        command.CommandText = "SELECT OriginalVersionId,OriginalPromptId,VersionNumber,SnapshotJson,RecoveredAt,Reason FROM RecoveryHistory ORDER BY Id;";
+        using var reader = command.ExecuteReader(); var records = new List<RecoveryHistoryDto>();
+        while (reader.Read()) records.Add(new RecoveryHistoryDto { OriginalVersionId=reader.GetInt64(0),OriginalPromptId=reader.GetInt64(1),
+            VersionNumber=reader.GetInt32(2),SnapshotJson=reader.GetString(3),RecoveredAt=FromDatabaseDate(reader.GetString(4))!.Value,Reason=reader.GetString(5) });
+        return records;
+    }
+
+    private static void CreateRecoveryTable(SqliteConnection connection, SqliteTransaction? transaction = null) => ExecuteNonQuery(connection,
+        "CREATE TABLE IF NOT EXISTS RecoveryHistory (Id INTEGER PRIMARY KEY AUTOINCREMENT, OriginalVersionId INTEGER NOT NULL, OriginalPromptId INTEGER NOT NULL, VersionNumber INTEGER NOT NULL, SnapshotJson TEXT NOT NULL, RecoveredAt TEXT NOT NULL, Reason TEXT NOT NULL);", transaction);
+
+    private static void InsertRecoveryRecord(SqliteConnection connection, SqliteTransaction transaction, RecoveryHistoryDto record)
+    {
+        using var command = connection.CreateCommand(); command.Transaction = transaction;
+        command.CommandText = "INSERT INTO RecoveryHistory (OriginalVersionId,OriginalPromptId,VersionNumber,SnapshotJson,RecoveredAt,Reason) VALUES ($versionId,$promptId,$number,$json,$time,$reason);";
+        command.Parameters.AddWithValue("$versionId",record.OriginalVersionId); command.Parameters.AddWithValue("$promptId",record.OriginalPromptId);
+        command.Parameters.AddWithValue("$number",record.VersionNumber); command.Parameters.AddWithValue("$json",record.SnapshotJson);
+        command.Parameters.AddWithValue("$time",ToDatabaseDate(record.RecoveredAt)); command.Parameters.AddWithValue("$reason",record.Reason); command.ExecuteNonQuery();
     }
 
     public IReadOnlyList<FolderNode> LoadFolderTree()
@@ -86,6 +163,7 @@ public sealed class PromptRepository
             [PromptFilterKind.Favorites] = CountPrompts(connection, "IsFavorite = 1 AND IsArchived = 0"),
             [PromptFilterKind.RecentlyUsed] = CountPrompts(connection, "LastUsedAt IS NOT NULL AND IsArchived = 0"),
             [PromptFilterKind.Drafts] = CountPrompts(connection, "Status = 'Draft' AND IsArchived = 0"),
+            [PromptFilterKind.InReview] = CountPrompts(connection, "Status = 'InReview' AND IsArchived = 0"),
             [PromptFilterKind.Approved] = CountPrompts(connection, "Status = 'Approved' AND IsArchived = 0"),
             [PromptFilterKind.Retired] = CountPrompts(connection, "Status = 'Retired' OR IsArchived = 1")
         };
@@ -162,7 +240,7 @@ public sealed class PromptRepository
 
         var sql =
             "SELECT p.Id, p.FolderId, p.Type, p.Mode, p.Labels, p.Title, p.Body, p.Status, p.Tags, p.Notes, p.FormattedNotes, p.IsFavorite, p.IsArchived, " +
-            "p.CreatedAt, p.UpdatedAt, p.LastUsedAt, COALESCE(v.Version, 1) AS Version " +
+            "p.CreatedAt, p.UpdatedAt, p.LastUsedAt, COALESCE(v.Version, 1) AS Version, p.Revision " +
             "FROM Prompts p ";
 
         if (useFts)
@@ -223,7 +301,7 @@ public sealed class PromptRepository
         using var command = connection.CreateCommand();
         command.CommandText =
             "SELECT p.Id, p.FolderId, p.Type, p.Mode, p.Labels, p.Title, p.Body, p.Status, p.Tags, p.Notes, p.FormattedNotes, p.IsFavorite, p.IsArchived, " +
-            "p.CreatedAt, p.UpdatedAt, p.LastUsedAt, COALESCE(v.Version, 1) AS Version " +
+            "p.CreatedAt, p.UpdatedAt, p.LastUsedAt, COALESCE(v.Version, 1) AS Version, p.Revision " +
             "FROM Prompts p " +
             "LEFT JOIN (SELECT PromptId, MAX(VersionNumber) AS Version FROM PromptVersions GROUP BY PromptId) v ON v.PromptId = p.Id " +
             "WHERE p.Id = $id;";
@@ -281,6 +359,7 @@ public sealed class PromptRepository
     {
         var now = DateTime.Now;
         using var connection = OpenConnection();
+        ValidateFolderName(connection, parentId, folderName, null);
         using var command = connection.CreateCommand();
         command.CommandText =
             "INSERT INTO Folders (ParentId, Name, SortOrder, CreatedAt, UpdatedAt) " +
@@ -293,6 +372,37 @@ public sealed class PromptRepository
         return Convert.ToInt32(command.ExecuteScalar(), CultureInfo.InvariantCulture);
     }
 
+    public void UpdateFolder(int folderId, string name, int? parentId)
+    {
+        using var connection = OpenConnection();
+        using var transaction = connection.BeginTransaction();
+        if (parentId.HasValue && GetDescendantFolderIds(connection, folderId, transaction).Contains(parentId.Value))
+            throw new InvalidOperationException("A folder cannot be moved into itself or one of its subfolders.");
+        ValidateFolderName(connection, parentId, name, folderId, transaction);
+        using var command = connection.CreateCommand();
+        command.Transaction = transaction;
+        command.CommandText = "UPDATE Folders SET Name=$name, ParentId=$parent, UpdatedAt=$date WHERE Id=$id;";
+        command.Parameters.AddWithValue("$name", name.Trim());
+        command.Parameters.AddWithValue("$parent", parentId.HasValue ? parentId.Value : DBNull.Value);
+        command.Parameters.AddWithValue("$date", ToDatabaseDate(DateTime.Now));
+        command.Parameters.AddWithValue("$id", folderId);
+        if (command.ExecuteNonQuery() != 1) throw new InvalidOperationException("The folder no longer exists.");
+        transaction.Commit();
+    }
+
+    private static void ValidateFolderName(SqliteConnection connection, int? parentId, string name, int? excludeId, SqliteTransaction? transaction = null)
+    {
+        if (string.IsNullOrWhiteSpace(name)) throw new InvalidOperationException("Enter a folder name.");
+        using var command = connection.CreateCommand();
+        command.Transaction = transaction;
+        command.CommandText = "SELECT COUNT(*) FROM Folders WHERE Name=$name COLLATE NOCASE AND Id<>$id AND ((ParentId IS NULL AND $parent IS NULL) OR ParentId=$parent);";
+        command.Parameters.AddWithValue("$name", name.Trim());
+        command.Parameters.AddWithValue("$parent", parentId.HasValue ? parentId.Value : DBNull.Value);
+        command.Parameters.AddWithValue("$id", excludeId ?? -1);
+        if (Convert.ToInt32(command.ExecuteScalar()) > 0)
+            throw new InvalidOperationException("A folder with this name already exists in the selected location.");
+    }
+
     public void DeleteFolder(int folderId)
     {
         using var connection = OpenConnection();
@@ -302,23 +412,15 @@ public sealed class PromptRepository
             return;
         }
 
+        var promptsToMove = GetPrompts(PromptFilterKind.All, null, null).Concat(GetPrompts(PromptFilterKind.Retired, null, null))
+            .Where(prompt => prompt.FolderId.HasValue && folderIds.Contains(prompt.FolderId.Value))
+            .DistinctBy(prompt => prompt.Id).ToList();
         using var transaction = connection.BeginTransaction();
-        var parameterNames = new List<string>();
-        for (var i = 0; i < folderIds.Count; i++)
-        {
-            parameterNames.Add("$folder" + i.ToString(CultureInfo.InvariantCulture));
-        }
 
-        using (var updatePromptsCommand = connection.CreateCommand())
+        foreach (var prompt in promptsToMove)
         {
-            updatePromptsCommand.Transaction = transaction;
-            updatePromptsCommand.CommandText = "UPDATE Prompts SET FolderId = NULL, UpdatedAt = $updatedAt WHERE FolderId IN (" + string.Join(", ", parameterNames) + ");";
-            updatePromptsCommand.Parameters.AddWithValue("$updatedAt", ToDatabaseDate(DateTime.Now));
-            for (var i = 0; i < folderIds.Count; i++)
-            {
-                updatePromptsCommand.Parameters.AddWithValue(parameterNames[i], folderIds[i]);
-            }
-            updatePromptsCommand.ExecuteNonQuery();
+            prompt.FolderId = null;
+            SavePromptRecord(connection, transaction, prompt, "Moved to Unfiled because the containing folder was deleted");
         }
 
         using (var deleteCommand = connection.CreateCommand())
@@ -364,11 +466,19 @@ public sealed class PromptRepository
 
     public PromptRow SavePrompt(PromptRow prompt, string changeNote)
     {
+        using var connection = OpenConnection();
+        using var transaction = connection.BeginTransaction();
+        SavePromptRecord(connection, transaction, prompt, changeNote);
+        transaction.Commit();
+        return GetPromptById(prompt.Id) ?? throw new InvalidOperationException("The prompt no longer exists.");
+    }
+
+    private static void SavePromptRecord(SqliteConnection connection, SqliteTransaction transaction, PromptRow prompt, string changeNote)
+    {
+        if (string.IsNullOrWhiteSpace(prompt.Title)) throw new InvalidOperationException("Enter a prompt title before saving.");
         var now = DateTime.Now;
         var normalizedChangeNote = string.IsNullOrWhiteSpace(changeNote) ? "Saved update" : changeNote.Trim();
 
-        using var connection = OpenConnection();
-        using var transaction = connection.BeginTransaction();
         var promptType = NormalizePromptType(prompt.Type);
         EnsurePromptType(connection, transaction, promptType);
         var promptMode = NormalizePromptMode(prompt.Mode);
@@ -383,8 +493,9 @@ public sealed class PromptRepository
             updateCommand.Transaction = transaction;
             updateCommand.CommandText =
                 "UPDATE Prompts SET FolderId = $folderId, Type = $type, Mode = $mode, Labels = $labels, Title = $title, Body = $body, Status = $status, Tags = $tags, Notes = $notes, FormattedNotes = $formattedNotes, " +
-                "IsFavorite = $isFavorite, IsArchived = $isArchived, UpdatedAt = $updatedAt WHERE Id = $id;";
+                "IsFavorite = $isFavorite, IsArchived = $isArchived, UpdatedAt = $updatedAt, Revision = Revision + 1 WHERE Id = $id AND Revision = $revision;";
             updateCommand.Parameters.AddWithValue("$id", prompt.Id);
+            updateCommand.Parameters.AddWithValue("$revision", prompt.Revision);
             updateCommand.Parameters.AddWithValue("$folderId", prompt.FolderId.HasValue ? prompt.FolderId.Value : DBNull.Value);
             updateCommand.Parameters.AddWithValue("$type", promptType);
             updateCommand.Parameters.AddWithValue("$mode", promptMode);
@@ -398,41 +509,71 @@ public sealed class PromptRepository
             updateCommand.Parameters.AddWithValue("$isFavorite", prompt.IsFavorite ? 1 : 0);
             updateCommand.Parameters.AddWithValue("$isArchived", prompt.IsArchived ? 1 : 0);
             updateCommand.Parameters.AddWithValue("$updatedAt", ToDatabaseDate(now));
-            updateCommand.ExecuteNonQuery();
+            if (updateCommand.ExecuteNonQuery() != 1)
+                throw new InvalidOperationException("This prompt was changed or deleted since it was opened. Your edits have been kept. Copy them before refreshing, then review the latest record.");
         }
 
         if (recordChanged)
         {
-            InsertPromptVersion(connection, transaction, prompt.Id, currentVersion + 1, prompt.FolderId, prompt.Title.Trim(), promptType, promptMode, labels, prompt.Body, prompt.Status.ToString(), prompt.Tags.Trim(), prompt.Notes.Trim(), prompt.FormattedNotes, normalizedChangeNote, now);
+            InsertPromptVersion(connection, transaction, prompt.Id, currentVersion + 1, prompt.FolderId, prompt.Title.Trim(), promptType, promptMode, labels, prompt.Body, prompt.Status.ToString(), prompt.Tags.Trim(), prompt.Notes.Trim(), prompt.FormattedNotes, normalizedChangeNote, now, prompt.IsArchived);
         }
-
-        transaction.Commit();
-        return GetPromptById(prompt.Id) ?? prompt;
     }
 
     public void SetFavorite(int promptId, bool isFavorite)
     {
-        ExecutePromptUpdate("UPDATE Prompts SET IsFavorite = $value, UpdatedAt = $updatedAt WHERE Id = $id;", promptId, isFavorite ? 1 : 0);
+        ExecutePromptUpdate("UPDATE Prompts SET IsFavorite = $value, UpdatedAt = $updatedAt, Revision = Revision + 1 WHERE Id = $id;", promptId, isFavorite ? 1 : 0);
     }
 
     public void ArchivePrompt(int promptId)
     {
-        using var connection = OpenConnection();
-        using var command = connection.CreateCommand();
-        command.CommandText = "UPDATE Prompts SET IsArchived = 1, Status = 'Retired', UpdatedAt = $updatedAt WHERE Id = $id;";
-        command.Parameters.AddWithValue("$id", promptId);
-        command.Parameters.AddWithValue("$updatedAt", ToDatabaseDate(DateTime.Now));
-        command.ExecuteNonQuery();
+        var prompt = GetPromptById(promptId) ?? throw new InvalidOperationException("The prompt no longer exists.");
+        prompt.IsArchived = true;
+        prompt.Status = PromptStatus.Retired;
+        SavePrompt(prompt, "Archived prompt");
     }
 
     public void RestorePrompt(int promptId)
     {
+        var prompt = GetPromptById(promptId) ?? throw new InvalidOperationException("The prompt no longer exists.");
+        prompt.IsArchived = false;
+        prompt.Status = PromptStatus.Draft;
+        SavePrompt(prompt, "Restored archived prompt to Draft");
+    }
+
+    public void MovePrompts(IEnumerable<int> promptIds, int? folderId, string changeNote)
+    {
+        var prompts = promptIds.Distinct().Select(id => GetPromptById(id)
+            ?? throw new InvalidOperationException("A selected prompt no longer exists.")).ToList();
         using var connection = OpenConnection();
-        using var command = connection.CreateCommand();
-        command.CommandText = "UPDATE Prompts SET IsArchived = 0, Status = 'Draft', UpdatedAt = $updatedAt WHERE Id = $id;";
-        command.Parameters.AddWithValue("$id", promptId);
-        command.Parameters.AddWithValue("$updatedAt", ToDatabaseDate(DateTime.Now));
-        command.ExecuteNonQuery();
+        using var transaction = connection.BeginTransaction();
+        foreach (var prompt in prompts)
+        {
+            prompt.FolderId = folderId;
+            SavePromptRecord(connection, transaction, prompt, changeNote);
+        }
+        transaction.Commit();
+    }
+
+    public PromptRow RestoreVersion(int promptId, int versionNumber, string changeNote, int? expectedRevision = null)
+    {
+        var prompt = GetPromptById(promptId) ?? throw new InvalidOperationException("The prompt no longer exists.");
+        if (expectedRevision.HasValue && prompt.Revision != expectedRevision.Value)
+            throw new InvalidOperationException("This prompt has changed. Refresh and review the latest record before restoring a version.");
+        var version = GetPromptVersions(promptId).Single(item => item.VersionNumber == versionNumber);
+        prompt.Body = version.Body;
+        if (!string.IsNullOrEmpty(version.Title)) prompt.Title = version.Title;
+        if (version.Type != null) prompt.Type = version.Type;
+        if (version.Mode != null) prompt.Mode = version.Mode;
+        if (version.Labels != null) prompt.Labels = version.Labels;
+        if (version.Tags != null) prompt.Tags = version.Tags;
+        if (version.Notes != null) prompt.Notes = version.Notes;
+        if (version.FormattedNotes != null) prompt.FormattedNotes = version.FormattedNotes;
+        if (version.Title != null)
+            using (var connection = OpenConnection())
+                prompt.FolderId = version.FolderId.HasValue && GetFolderPathMap(connection).ContainsKey(version.FolderId.Value) ? version.FolderId : null;
+        prompt.Status = PromptStatus.Draft;
+        prompt.IsArchived = false;
+        return SavePrompt(prompt, "Restore v" + versionNumber + ": " + changeNote);
     }
 
     public void MarkUsed(int promptId)
@@ -514,20 +655,59 @@ public sealed class PromptRepository
             }
         }
 
+        package.RecoveryHistory.AddRange(GetRecoveryHistory());
+        return package;
+    }
+
+    public PromptExportPackage CreateScopedExport(IEnumerable<int>? promptIds)
+    {
+        var package = CreateExportPackage(null);
+        if (promptIds != null)
+        {
+            package.RecoveryHistory.Clear();
+            var ids = promptIds.ToHashSet();
+            package.Prompts.RemoveAll(prompt => !ids.Contains(prompt.Id));
+            var folderIds = package.Prompts.SelectMany(prompt => prompt.Versions.Select(version => version.FolderId).Append(prompt.FolderId))
+                .Where(id => id.HasValue).Select(id => id!.Value).ToHashSet();
+            var byId = package.Folders.ToDictionary(folder => folder.Id);
+            foreach (var id in folderIds.ToArray())
+            {
+                var current = id;
+                while (byId.TryGetValue(current, out var folder) && folder.ParentId.HasValue && folderIds.Add(folder.ParentId.Value))
+                    current = folder.ParentId.Value;
+            }
+            package.Folders.RemoveAll(folder => !folderIds.Contains(folder.Id));
+        }
         return package;
     }
 
     public int ImportPackage(PromptExportPackage package)
     {
+        if (package.Format != "PromptManager.Export" || !Version.TryParse(package.FormatVersion, out var formatVersion)
+            || formatVersion > new Version(1, 4) || formatVersion.Major != 1)
+            throw new InvalidOperationException("This export format is unsupported. Use a supported Prompt Manager export.");
+        if (package.Folders == null || package.Prompts == null
+            || package.Folders.Any(folder => folder == null || folder.Id <= 0 || string.IsNullOrWhiteSpace(folder.Name))
+            || package.Folders.Select(folder => folder.Id).Distinct().Count() != package.Folders.Count
+            || package.Prompts.Any(prompt => prompt == null || prompt.Versions == null || prompt.Body == null || string.IsNullOrWhiteSpace(prompt.Title)
+                || !Enum.IsDefined(prompt.Status) || prompt.Tags == null || prompt.Notes == null || prompt.FormattedNotes == null
+                || prompt.Versions.Any(version => version == null || version.VersionNumber <= 0 || version.Body == null)
+                || prompt.Versions.Select(version => version.VersionNumber).Distinct().Count() != prompt.Versions.Count))
+            throw new InvalidOperationException("The export contains invalid prompt, folder, or version records.");
+        if (package.RecoveryHistory == null || package.RecoveryHistory.Any(record => record == null || record.SnapshotJson == null || record.Reason == null))
+            throw new InvalidOperationException("The export contains invalid recovery records.");
+        foreach (var record in package.RecoveryHistory)
+        {
+            using var snapshot = JsonDocument.Parse(record.SnapshotJson);
+            if (snapshot.RootElement.ValueKind != JsonValueKind.Object) throw new InvalidOperationException("A recovery snapshot must be a JSON object.");
+        }
         using var connection = OpenConnection();
         using var transaction = connection.BeginTransaction();
         var folderMap = new Dictionary<int, int>();
         var pendingFolders = package.Folders.ToList();
-        var guard = 0;
-
-        while (pendingFolders.Count > 0 && guard < 1000)
+        while (pendingFolders.Count > 0)
         {
-            guard++;
+            var previousCount = pendingFolders.Count;
             foreach (var folder in pendingFolders.ToList())
             {
                 if (folder.ParentId.HasValue && !folderMap.ContainsKey(folder.ParentId.Value))
@@ -540,23 +720,33 @@ public sealed class PromptRepository
                 folderMap[folder.Id] = actualId;
                 pendingFolders.Remove(folder);
             }
+            if (pendingFolders.Count == previousCount)
+                throw new InvalidOperationException("The export contains missing parent folders or a circular folder structure. Nothing was imported.");
         }
 
         var imported = 0;
+        foreach (var record in package.RecoveryHistory) InsertRecoveryRecord(connection, transaction, record);
         foreach (var prompt in package.Prompts)
         {
+            if (prompt.FolderId.HasValue && !folderMap.ContainsKey(prompt.FolderId.Value))
+                throw new InvalidOperationException("An imported prompt refers to a missing folder. Nothing was imported.");
             var mappedFolderId = prompt.FolderId.HasValue && folderMap.TryGetValue(prompt.FolderId.Value, out var actualFolderId)
                 ? actualFolderId
                 : (int?)null;
 
             var newPromptId = InsertImportedPrompt(connection, transaction, prompt, mappedFolderId);
             IEnumerable<PromptVersionExportDto> versions = prompt.Versions.Count == 0
-                ? new[] { new PromptVersionExportDto { VersionNumber = 1, FolderId = mappedFolderId, Title = prompt.Title, Type = prompt.Type, Mode = prompt.Mode, Labels = prompt.Labels, Body = prompt.Body, Status = prompt.Status.ToString(), Tags = prompt.Tags, Notes = prompt.Notes, FormattedNotes = prompt.FormattedNotes, ChangeNote = "Imported", CreatedAt = DateTime.Now } }
+                ? new[] { new PromptVersionExportDto { VersionNumber = 1, FolderId = prompt.FolderId, Title = prompt.Title, Type = prompt.Type, Mode = prompt.Mode, Labels = prompt.Labels, Body = prompt.Body, Status = prompt.Status.ToString(), Tags = prompt.Tags, Notes = prompt.Notes, FormattedNotes = prompt.FormattedNotes, IsArchived = prompt.IsArchived, ChangeNote = "Imported", CreatedAt = DateTime.Now } }
                 : prompt.Versions.OrderBy(version => version.VersionNumber);
 
             foreach (var version in versions)
             {
-                InsertPromptVersion(connection, transaction, newPromptId, version.VersionNumber, version.FolderId ?? mappedFolderId, string.IsNullOrWhiteSpace(version.Title) ? prompt.Title : version.Title, string.IsNullOrWhiteSpace(version.Type) ? prompt.Type : version.Type, string.IsNullOrWhiteSpace(version.Mode) ? prompt.Mode : version.Mode, string.IsNullOrWhiteSpace(version.Labels) ? prompt.Labels : version.Labels, version.Body, string.IsNullOrWhiteSpace(version.Status) ? prompt.Status.ToString() : version.Status, string.IsNullOrWhiteSpace(version.Tags) ? prompt.Tags : version.Tags, string.IsNullOrWhiteSpace(version.Notes) ? prompt.Notes : version.Notes, string.IsNullOrWhiteSpace(version.FormattedNotes) ? prompt.FormattedNotes : version.FormattedNotes, version.ChangeNote, version.CreatedAt);
+                int? historyFolderId = version.FolderId.HasValue && folderMap.TryGetValue(version.FolderId.Value, out var mappedHistoryFolder) ? mappedHistoryFolder : null;
+                InsertPromptVersion(connection, transaction, newPromptId, version.VersionNumber, historyFolderId,
+                    version.Title ?? "", version.Type ?? "", version.Mode ?? "", version.Labels ?? "", version.Body,
+                    version.Status ?? "", version.Tags ?? "", version.Notes ?? "", version.FormattedNotes ?? "",
+                    version.ChangeNote, version.CreatedAt, version.IsArchived ?? false,
+                    version.FolderPath ?? (version.FolderId.HasValue && !historyFolderId.HasValue ? "(not recorded)" : null));
             }
 
             imported++;
@@ -568,38 +758,70 @@ public sealed class PromptRepository
 
     public void BackupTo(string destinationPath)
     {
-        Directory.CreateDirectory(Path.GetDirectoryName(destinationPath)!);
-        File.Copy(DatabasePath, destinationPath, true);
+        var destination = Path.GetFullPath(destinationPath);
+        if (string.Equals(destination, Path.GetFullPath(DatabasePath), StringComparison.OrdinalIgnoreCase))
+            throw new InvalidOperationException("Choose a backup file different from the active library.");
+        Directory.CreateDirectory(Path.GetDirectoryName(destination)!);
+        var stagedBackup = destination + "." + Guid.NewGuid().ToString("N") + ".tmp";
+        try
+        {
+            CopyDatabaseSnapshot(DatabasePath, stagedBackup);
+            ValidateBackupDatabase(stagedBackup);
+            File.Move(stagedBackup, destination, true);
+        }
+        finally { DeleteTemporaryDatabase(stagedBackup); }
     }
 
     public string? RestoreFrom(string sourcePath)
     {
         ValidateBackupDatabase(sourcePath);
         Directory.CreateDirectory(Path.GetDirectoryName(DatabasePath)!);
-
+        if (string.Equals(Path.GetFullPath(sourcePath), Path.GetFullPath(DatabasePath), StringComparison.OrdinalIgnoreCase))
+            throw new InvalidOperationException("Choose a backup file different from the active library.");
+        var stagedDatabase = DatabasePath + ".restore-" + Guid.NewGuid().ToString("N") + ".tmp";
         string? safetyBackupPath = null;
-        if (File.Exists(DatabasePath))
+        try
         {
-            safetyBackupPath = Path.Combine(
-                Path.GetDirectoryName(DatabasePath)!,
-                "pre-restore-backup-" + DateTime.Now.ToString("yyyyMMdd-HHmmss", CultureInfo.InvariantCulture) + ".db");
-            File.Copy(DatabasePath, safetyBackupPath, true);
+            CopyDatabaseSnapshot(sourcePath, stagedDatabase);
+            var stagedRepository = new PromptRepository(stagedDatabase);
+            stagedRepository.Initialize(false);
+            stagedRepository.LoadFolderTree();
+            stagedRepository.GetPrompts(PromptFilterKind.Retired, null, null);
+            stagedRepository.GetPrompts(PromptFilterKind.All, null, null);
+            ValidateBackupDatabase(stagedDatabase);
+            if (File.Exists(DatabasePath))
+            {
+                safetyBackupPath = Path.Combine(Path.GetDirectoryName(DatabasePath)!,
+                    "pre-restore-backup-" + DateTime.Now.ToString("yyyyMMdd-HHmmss", CultureInfo.InvariantCulture) + "-" + Guid.NewGuid().ToString("N")[..8] + ".db");
+                BackupTo(safetyBackupPath);
+                using (var connection = OpenConnection())
+                using (var command = connection.CreateCommand())
+                {
+                    command.CommandText = "PRAGMA journal_mode=DELETE;";
+                    if (!string.Equals(command.ExecuteScalar()?.ToString(), "delete", StringComparison.OrdinalIgnoreCase))
+                        throw new InvalidOperationException("The library is in use. Close other applications using this database and retry the restore.");
+                }
+                File.Replace(stagedDatabase, DatabasePath, null);
+            }
+            else File.Move(stagedDatabase, DatabasePath);
+            _isFtsAvailable = stagedRepository._isFtsAvailable;
+            return safetyBackupPath;
         }
-
-        File.Copy(sourcePath, DatabasePath, true);
-        Initialize();
-        return safetyBackupPath;
+        finally { DeleteTemporaryDatabase(stagedDatabase); }
     }
 
-    public static void ValidateBackupDatabase(string sourcePath)
+    public static void ValidateBackupDatabase(string sourcePath, bool allowDetachedHistory = false)
     {
         if (!File.Exists(sourcePath))
         {
             throw new FileNotFoundException("The selected backup file was not found.", sourcePath);
         }
 
-        using var connection = new SqliteConnection(new SqliteConnectionStringBuilder { DataSource = sourcePath, Mode = SqliteOpenMode.ReadOnly }.ToString());
+        using var connection = new SqliteConnection(new SqliteConnectionStringBuilder { DataSource = sourcePath, Mode = SqliteOpenMode.ReadOnly, Pooling = false }.ToString());
         connection.Open();
+        var applicationId = ReadPragma(connection, "application_id");
+        if ((applicationId != 0 && applicationId != ApplicationId) || ReadPragma(connection, "user_version") > SchemaVersion)
+            throw new InvalidOperationException("This is not a supported Prompt Manager database.");
 
         using (var command = connection.CreateCommand())
         {
@@ -620,13 +842,67 @@ public sealed class PromptRepository
                 throw new InvalidOperationException("The selected database is not a complete Prompt Manager backup.");
             }
         }
+        var columns = new Dictionary<string, string[]>
+        {
+            ["Folders"] = new[] { "Id", "ParentId", "Name", "SortOrder", "CreatedAt", "UpdatedAt" },
+            ["Prompts"] = new[] { "Id", "FolderId", "Title", "Body", "Status", "Tags", "Notes", "IsFavorite", "IsArchived", "CreatedAt", "UpdatedAt", "LastUsedAt" },
+            ["PromptVersions"] = new[] { "Id", "PromptId", "VersionNumber", "Body", "ChangeNote", "CreatedAt" }
+        };
+        foreach (var table in columns)
+            foreach (var column in table.Value)
+                if (!ColumnExists(connection, table.Key, column))
+                    throw new InvalidOperationException("The backup has an incompatible schema: " + table.Key + "." + column);
+        using var foreignKeys = connection.CreateCommand();
+        foreignKeys.CommandText = "PRAGMA foreign_key_check;";
+        using (var foreignKeyReader = foreignKeys.ExecuteReader())
+            while (foreignKeyReader.Read())
+                if (!(allowDetachedHistory && foreignKeyReader.GetString(0) == "PromptVersions" && foreignKeyReader.GetString(2) == "Prompts"))
+                    throw new InvalidOperationException("The backup contains broken record relationships.");
+        using var records = connection.CreateCommand();
+        records.CommandText = """
+            SELECT (SELECT COUNT(*) FROM Prompts WHERE Status NOT IN ('Draft','InReview','Approved','Retired') OR IsArchived NOT IN (0,1) OR IsFavorite NOT IN (0,1)
+                OR (FolderId IS NOT NULL AND FolderId NOT IN (SELECT Id FROM Folders)))
+                + (SELECT COUNT(*) FROM Folders WHERE ParentId IS NOT NULL AND ParentId NOT IN (SELECT Id FROM Folders))
+                + (SELECT COUNT(*) FROM PromptVersions WHERE VersionNumber < 1)
+                + (SELECT COUNT(*) FROM (SELECT PromptId, VersionNumber FROM PromptVersions GROUP BY PromptId,VersionNumber HAVING COUNT(*) > 1));
+            """;
+        if (Convert.ToInt64(records.ExecuteScalar()) != 0) throw new InvalidOperationException("The backup contains invalid records or relationships.");
+        if (!allowDetachedHistory)
+        {
+            records.CommandText = "SELECT COUNT(*) FROM PromptVersions WHERE PromptId NOT IN (SELECT Id FROM Prompts);";
+            if (Convert.ToInt64(records.ExecuteScalar()) != 0) throw new InvalidOperationException("The backup contains detached version history.");
+        }
+        GetFolderPathMap(connection);
+    }
+
+    private static int ReadPragma(SqliteConnection connection, string name)
+    {
+        using var command = connection.CreateCommand();
+        command.CommandText = "PRAGMA " + name + ";";
+        return Convert.ToInt32(command.ExecuteScalar(), CultureInfo.InvariantCulture);
+    }
+
+    private static void CopyDatabaseSnapshot(string sourcePath, string destinationPath)
+    {
+        using var source = new SqliteConnection(new SqliteConnectionStringBuilder { DataSource = sourcePath, Mode = SqliteOpenMode.ReadOnly, Pooling = false }.ToString());
+        using var destination = new SqliteConnection(new SqliteConnectionStringBuilder { DataSource = destinationPath, Pooling = false }.ToString());
+        source.Open();
+        destination.Open();
+        source.BackupDatabase(destination);
+    }
+
+    private static void DeleteTemporaryDatabase(string path)
+    {
+        foreach (var temporaryFile in new[] { path, path + "-wal", path + "-shm" })
+            if (File.Exists(temporaryFile)) File.Delete(temporaryFile);
     }
 
     private SqliteConnection OpenConnection()
     {
         var connection = new SqliteConnection(new SqliteConnectionStringBuilder
         {
-            DataSource = DatabasePath
+            DataSource = DatabasePath,
+            Pooling = false
         }.ToString());
         connection.Open();
         ExecuteNonQuery(connection, "PRAGMA foreign_keys = ON;");
@@ -635,6 +911,7 @@ public sealed class PromptRepository
 
     private static void CreateSchema(SqliteConnection connection)
     {
+        CreateRecoveryTable(connection);
         ExecuteNonQuery(connection,
             """
             CREATE TABLE IF NOT EXISTS Folders (
@@ -703,6 +980,7 @@ public sealed class PromptRepository
         AddColumnIfMissing(connection, "Prompts", "Mode", "TEXT NOT NULL DEFAULT 'Text'");
         AddColumnIfMissing(connection, "Prompts", "Labels", "TEXT NOT NULL DEFAULT ''");
         AddColumnIfMissing(connection, "Prompts", "FormattedNotes", "TEXT NOT NULL DEFAULT ''");
+        AddColumnIfMissing(connection, "Prompts", "Revision", "INTEGER NOT NULL DEFAULT 0");
         ExecuteNonQuery(connection, "UPDATE Prompts SET Type = 'Prompt' WHERE Type IS NULL OR TRIM(Type) = '';");
         ExecuteNonQuery(connection, "UPDATE Prompts SET Mode = 'Text' WHERE Mode IS NULL OR TRIM(Mode) = '';");
         ExecuteNonQuery(connection, "UPDATE Prompts SET Labels = '' WHERE Labels IS NULL;");
@@ -719,6 +997,8 @@ public sealed class PromptRepository
         AddColumnIfMissing(connection, "PromptVersions", "Tags", "TEXT NOT NULL DEFAULT ''");
         AddColumnIfMissing(connection, "PromptVersions", "Notes", "TEXT NOT NULL DEFAULT ''");
         AddColumnIfMissing(connection, "PromptVersions", "FormattedNotes", "TEXT NOT NULL DEFAULT ''");
+        AddColumnIfMissing(connection, "PromptVersions", "FolderPath", "TEXT NOT NULL DEFAULT ''");
+        AddColumnIfMissing(connection, "PromptVersions", "IsArchived", "INTEGER NOT NULL DEFAULT 0");
     }
 
     private static void AddColumnIfMissing(SqliteConnection connection, string tableName, string columnName, string definition)
@@ -751,6 +1031,10 @@ public sealed class PromptRepository
     {
         try
         {
+            using var triggerCheck = connection.CreateCommand();
+            triggerCheck.CommandText = "SELECT COUNT(*) FROM sqlite_master WHERE type='trigger' AND name IN ('Prompts_ai','Prompts_ad','Prompts_au');";
+            if (ColumnExists(connection, "PromptSearch", "Mode") && ColumnExists(connection, "PromptSearch", "Labels")
+                && Convert.ToInt32(triggerCheck.ExecuteScalar()) == 3) return true;
             ExecuteNonQuery(connection,
                 """
                 DROP TRIGGER IF EXISTS Prompts_ai;
@@ -787,7 +1071,7 @@ public sealed class PromptRepository
                     VALUES (new.Id, new.Type, new.Mode, new.Labels, new.Title, new.Body, new.Tags, new.Notes);
                 END;
                 """);
-
+            ExecuteNonQuery(connection, "INSERT INTO PromptSearch(PromptSearch) VALUES('rebuild');");
             return true;
         }
         catch (SqliteException)
@@ -814,7 +1098,7 @@ public sealed class PromptRepository
 
         InsertSeedPrompt(connection, csv, "CSV Protocol Builder", PromptStatus.Draft, "CSV; protocol; validation",
             "Create a validation protocol outline for a configurable GxP computerized system.");
-        InsertSeedPrompt(connection, csv, "Part 11 Test Matrix", PromptStatus.Approved, "Part 11; test matrix; compliance",
+        InsertSeedPrompt(connection, csv, "Part 11 Test Matrix", PromptStatus.Draft, "Part 11; test matrix; compliance",
             "Generate a test matrix covering electronic records, electronic signatures, audit trail, access control, and record retention requirements.");
         InsertSeedPrompt(connection, equipment, "IQ/OQ Generator", PromptStatus.InReview, "IQ; OQ; equipment",
             "Build an IQ/OQ protocol skeleton for qualified equipment, including prerequisites, test scripts, acceptance criteria, and deviation handling.");
@@ -914,6 +1198,7 @@ public sealed class PromptRepository
                 UpdatedAt = FromDatabaseDate(reader.GetString(14)) ?? DateTime.Now,
                 LastUsedAt = reader.IsDBNull(15) ? null : FromDatabaseDate(reader.GetString(15)),
                 Version = reader.GetInt32(16),
+                Revision = reader.GetInt32(17),
                 FolderPath = folderPath
             });
         }
@@ -921,9 +1206,10 @@ public sealed class PromptRepository
         return prompts;
     }
 
-    private static Dictionary<int, string> GetFolderPathMap(SqliteConnection connection)
+    private static Dictionary<int, string> GetFolderPathMap(SqliteConnection connection, SqliteTransaction? transaction = null)
     {
         using var command = connection.CreateCommand();
+        command.Transaction = transaction;
         command.CommandText = "SELECT Id, ParentId, Name FROM Folders;";
 
         var folders = new Dictionary<int, (int? ParentId, string Name)>();
@@ -936,6 +1222,7 @@ public sealed class PromptRepository
         }
 
         var cache = new Dictionary<int, string>();
+        var resolving = new HashSet<int>();
         string Resolve(int id)
         {
             if (cache.TryGetValue(id, out var path))
@@ -947,8 +1234,10 @@ public sealed class PromptRepository
             {
                 return "Unfiled";
             }
-
+            if (!resolving.Add(id)) throw new InvalidOperationException("The library contains a circular folder structure.");
+            if (resolving.Count > 256) throw new InvalidOperationException("The folder structure exceeds the supported depth of 256 levels.");
             path = folder.ParentId.HasValue ? Resolve(folder.ParentId.Value) + " / " + folder.Name : folder.Name;
+            resolving.Remove(id);
             cache[id] = path;
             return path;
         }
@@ -961,9 +1250,10 @@ public sealed class PromptRepository
         return cache;
     }
 
-    private static List<int> GetDescendantFolderIds(SqliteConnection connection, int folderId)
+    private static List<int> GetDescendantFolderIds(SqliteConnection connection, int folderId, SqliteTransaction? transaction = null)
     {
         using var command = connection.CreateCommand();
+        command.Transaction = transaction;
         command.CommandText = "SELECT Id, ParentId FROM Folders;";
         var childrenByParent = new Dictionary<int, List<int>>();
 
@@ -989,8 +1279,10 @@ public sealed class PromptRepository
         }
 
         var result = new List<int>();
+        var seen = new HashSet<int>();
         void AddWithChildren(int id)
         {
+            if (!seen.Add(id)) throw new InvalidOperationException("The library contains a circular folder structure.");
             result.Add(id);
             if (!childrenByParent.TryGetValue(id, out var children))
             {
@@ -1027,6 +1319,10 @@ public sealed class PromptRepository
                 where.Add("p.Status = 'Approved'");
                 where.Add("p.IsArchived = 0");
                 break;
+            case PromptFilterKind.InReview:
+                where.Add("p.Status = 'InReview'");
+                where.Add("p.IsArchived = 0");
+                break;
             case PromptFilterKind.Retired:
                 where.Add("(p.Status = 'Retired' OR p.IsArchived = 1)");
                 break;
@@ -1052,13 +1348,14 @@ public sealed class PromptRepository
     private static IReadOnlyList<PromptVersionExportDto> GetPromptVersions(SqliteConnection connection, int promptId)
     {
         using var command = connection.CreateCommand();
-        command.CommandText = "SELECT VersionNumber, Body, ChangeNote, CreatedAt, FolderId, Type, Mode, Labels, Title, Status, Tags, Notes, FormattedNotes FROM PromptVersions WHERE PromptId = $promptId ORDER BY VersionNumber;";
+        command.CommandText = "SELECT VersionNumber, Body, ChangeNote, CreatedAt, FolderId, Type, Mode, Labels, Title, Status, Tags, Notes, FormattedNotes, FolderPath, IsArchived FROM PromptVersions WHERE PromptId = $promptId ORDER BY VersionNumber;";
         command.Parameters.AddWithValue("$promptId", promptId);
 
         var versions = new List<PromptVersionExportDto>();
         using var reader = command.ExecuteReader();
         while (reader.Read())
         {
+            var metadataKnown = !string.IsNullOrEmpty(reader.GetString(8));
             versions.Add(new PromptVersionExportDto
             {
                 VersionNumber = reader.GetInt32(0),
@@ -1066,14 +1363,16 @@ public sealed class PromptRepository
                 ChangeNote = reader.GetString(2),
                 CreatedAt = FromDatabaseDate(reader.GetString(3)) ?? DateTime.Now,
                 FolderId = reader.IsDBNull(4) ? null : reader.GetInt32(4),
-                Type = reader.GetString(5),
-                Mode = reader.GetString(6),
-                Labels = reader.GetString(7),
-                Title = reader.GetString(8),
-                Status = reader.GetString(9),
-                Tags = reader.GetString(10),
-                Notes = reader.GetString(11),
-                FormattedNotes = reader.GetString(12)
+                Type = metadataKnown ? reader.GetString(5) : null,
+                Mode = metadataKnown ? reader.GetString(6) : null,
+                Labels = metadataKnown ? reader.GetString(7) : null,
+                Title = metadataKnown ? reader.GetString(8) : null,
+                Status = metadataKnown ? reader.GetString(9) : null,
+                Tags = metadataKnown ? reader.GetString(10) : null,
+                Notes = metadataKnown ? reader.GetString(11) : null,
+                FormattedNotes = metadataKnown ? reader.GetString(12) : null,
+                FolderPath = metadataKnown ? reader.GetString(13) : null,
+                IsArchived = metadataKnown ? reader.GetInt32(14) == 1 : null
             });
         }
 
@@ -1147,13 +1446,15 @@ public sealed class PromptRepository
         InsertPromptVersion(connection, transaction, promptId, versionNumber, null, "", "Prompt", "Text", "", body, "Draft", "", "", "", changeNote, createdAt);
     }
 
-    private static void InsertPromptVersion(SqliteConnection connection, SqliteTransaction? transaction, int promptId, int versionNumber, int? folderId, string title, string type, string mode, string labels, string body, string status, string tags, string notes, string formattedNotes, string changeNote, DateTime createdAt)
+    private static void InsertPromptVersion(SqliteConnection connection, SqliteTransaction? transaction, int promptId, int versionNumber, int? folderId, string title, string type, string mode, string labels, string body, string status, string tags, string notes, string formattedNotes, string changeNote, DateTime createdAt, bool isArchived = false, string? folderPath = null)
     {
         using var command = connection.CreateCommand();
         command.Transaction = transaction;
         command.CommandText =
-            "INSERT INTO PromptVersions (PromptId, VersionNumber, FolderId, Type, Mode, Labels, Title, Body, Status, Tags, Notes, FormattedNotes, ChangeNote, CreatedAt) " +
-            "VALUES ($promptId, $versionNumber, $folderId, $type, $mode, $labels, $title, $body, $status, $tags, $notes, $formattedNotes, $changeNote, $createdAt);";
+            "INSERT INTO PromptVersions (PromptId, VersionNumber, FolderId, Type, Mode, Labels, Title, Body, Status, Tags, Notes, FormattedNotes, ChangeNote, CreatedAt, FolderPath, IsArchived) " +
+            "VALUES ($promptId, $versionNumber, $folderId, $type, $mode, $labels, $title, $body, $status, $tags, $notes, $formattedNotes, $changeNote, $createdAt, $folderPath, $isArchived);";
+        command.Parameters.AddWithValue("$folderPath", folderPath ?? (folderId.HasValue && GetFolderPathMap(connection, transaction).TryGetValue(folderId.Value, out var path) ? path : "Unfiled"));
+        command.Parameters.AddWithValue("$isArchived", isArchived ? 1 : 0);
         command.Parameters.AddWithValue("$promptId", promptId);
         command.Parameters.AddWithValue("$versionNumber", versionNumber);
         command.Parameters.AddWithValue("$folderId", folderId.HasValue ? folderId.Value : DBNull.Value);
@@ -1163,8 +1464,8 @@ public sealed class PromptRepository
         command.Parameters.AddWithValue("$title", title.Trim());
         command.Parameters.AddWithValue("$body", body);
         command.Parameters.AddWithValue("$status", status);
-        command.Parameters.AddWithValue("$tags", tags.Trim());
-        command.Parameters.AddWithValue("$notes", notes.Trim());
+        command.Parameters.AddWithValue("$tags", tags);
+        command.Parameters.AddWithValue("$notes", notes);
         command.Parameters.AddWithValue("$formattedNotes", formattedNotes);
         command.Parameters.AddWithValue("$changeNote", changeNote);
         command.Parameters.AddWithValue("$createdAt", ToDatabaseDate(createdAt));
@@ -1184,7 +1485,7 @@ public sealed class PromptRepository
     {
         using var command = connection.CreateCommand();
         command.Transaction = transaction;
-        command.CommandText = "SELECT FolderId, Type, Mode, Labels, Title, Body, Status, Tags, Notes, FormattedNotes FROM Prompts WHERE Id = $id;";
+        command.CommandText = "SELECT FolderId, Type, Mode, Labels, Title, Body, Status, Tags, Notes, FormattedNotes, IsArchived FROM Prompts WHERE Id = $id;";
         command.Parameters.AddWithValue("$id", prompt.Id);
 
         using var reader = command.ExecuteReader();
@@ -1203,7 +1504,8 @@ public sealed class PromptRepository
             || !Same(reader.GetString(6), prompt.Status.ToString())
             || !Same(reader.GetString(7), prompt.Tags.Trim())
             || !Same(reader.GetString(8), prompt.Notes.Trim())
-            || !Same(reader.GetString(9), prompt.FormattedNotes);
+            || !Same(reader.GetString(9), prompt.FormattedNotes)
+            || (reader.GetInt32(10) == 1) != prompt.IsArchived;
     }
 
     private static bool Same(string left, string right)
@@ -1295,9 +1597,10 @@ public sealed class PromptRepository
         command.ExecuteNonQuery();
     }
 
-    private static void ExecuteNonQuery(SqliteConnection connection, string sql)
+    private static void ExecuteNonQuery(SqliteConnection connection, string sql, SqliteTransaction? transaction = null)
     {
         using var command = connection.CreateCommand();
+        command.Transaction = transaction;
         command.CommandText = sql;
         command.ExecuteNonQuery();
     }

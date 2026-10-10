@@ -9,6 +9,7 @@ public partial class AboutWindow : Window
     public AboutWindow()
     {
         InitializeComponent();
+        VersionTextBlock.Text = "Version " + typeof(App).Assembly.GetName().Version?.ToString(3);
         LoadLogo();
     }
 
